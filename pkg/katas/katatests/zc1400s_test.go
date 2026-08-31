@@ -87,6 +87,19 @@ func TestZC1402(t *testing.T) {
 			expected: []katas.Violation{},
 		},
 		{
+			// This spelling was meant to be covered already; the prefix test compared six characters against a seven-character literal.
+			name:  "invalid — date --date=",
+			input: `date --date=@1700000000 +%Y-%m-%d`,
+			expected: []katas.Violation{
+				{
+					KataID:  "ZC1402",
+					Message: "Use Zsh `strftime` (from `zsh/datetime`) instead of `date -d @N -- +fmt`. The `-d`/`@` form is GNU-specific; `strftime` is portable Zsh.",
+					Line:    1,
+					Column:  1,
+				},
+			},
+		},
+		{
 			name:  "invalid — date -d",
 			input: `date -d @1700000000 +%Y-%m-%d`,
 			expected: []katas.Violation{
@@ -217,6 +230,18 @@ func TestZC1406(t *testing.T) {
 			name:     "valid — xargs without -P",
 			input:    `xargs -n 1 echo`,
 			expected: []katas.Violation{},
+		},
+		{
+			name:  "invalid — xargs --max-procs=4",
+			input: `xargs --max-procs=4 cmd`,
+			expected: []katas.Violation{
+				{
+					KataID:  "ZC1406",
+					Message: "Consider `zargs -P N` (autoload -Uz zargs) instead of `xargs -P N`. Parallel execution with Zsh functions in scope — no subshell-per-item.",
+					Line:    1,
+					Column:  1,
+				},
+			},
 		},
 		{
 			name:  "invalid — xargs -P 4",
@@ -4170,6 +4195,12 @@ func TestZC1494(t *testing.T) {
 		{
 			name:     "valid — tcpdump -w capture.pcap -Z tcpdump",
 			input:    `tcpdump -i eth0 -w capture.pcap -Z tcpdump`,
+			expected: []katas.Violation{},
+		},
+		{
+			// tcpdump documents the value inline: --relinquish-privileges=user.
+			name:     "valid — tcpdump -w with inline privilege drop",
+			input:    `tcpdump -i eth0 -w capture.pcap --relinquish-privileges=tcpdump`,
 			expected: []katas.Violation{},
 		},
 		{

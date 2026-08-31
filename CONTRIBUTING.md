@@ -77,6 +77,19 @@ go test -fuzz=FuzzLexer -fuzztime=10s ./pkg/lexer
 go test -fuzz=FuzzParser -fuzztime=10s ./pkg/parser
 ```
 
+The corpus sweeps run the linter over the pinned upstream integrations and gate on two baselines.
+Run them when changing the parser, the lexer, or any kata:
+
+```bash
+go build -o zshellcheck ./cmd/zshellcheck
+ZSHELLCHECK_BIN=$PWD/zshellcheck bash scripts/parser-corpus-sweep.sh
+ZSHELLCHECK_BIN=$PWD/zshellcheck bash scripts/violation-corpus-sweep.sh
+```
+
+The first sweep requires zero parser errors and zero panics.
+The second snapshots kata findings on that known-good code; a finding that appears, disappears, or changes count fails the gate.
+Review the diff, then re-snapshot with `bash scripts/violation-corpus-sweep.sh --update-baseline` when the change is intended.
+
 ## Adding a new kata
 
 A kata is a Zsh-specific detection rule.
@@ -129,7 +142,6 @@ A PR is mergeable when each item passes or has an explicit waiver in the PR desc
 - **Style.** `gofumpt`, `goimports`, and the full `golangci-lint` suite pass with zero violations.
 - **Safety.** No `panic()` outside `main` or test files; `Check` functions use `ok`-checked type assertions; no new `unsafe` imports; no shell-out from linter logic.
 - **Public-surface hygiene.** Exported identifiers carry doc comments; backward-incompatible changes are flagged in CHANGELOG and require a version-major or version-minor bump.
-- **Trace hygiene.** No banned tokens (claude, anthropic, gemini, etc.) anywhere in tracked surface; the trace-scan gate passes.
 - **Headers.** Every new Go file carries the SPDX and copyright lines from the [coding standards](#coding-standards) section.
 - **Security.** No leaked secrets, no plaintext credentials, no broken cryptography. Vulnerability fixes follow the disclosure process in [SECURITY.md](SECURITY.md).
 - **Documentation.** User-visible changes update README, INSTALL, USER_GUIDE, or KATAS.md as appropriate; KATAS.md is regenerated rather than hand-edited.

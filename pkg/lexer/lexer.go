@@ -256,7 +256,10 @@ func (l *Lexer) lastTokenIsValueTerminator() bool {
 // arithmetic group. The parser's `((`-marker is 'D' on parenStack.
 func (l *Lexer) inArithmetic() bool {
 	for i := len(l.parenStack) - 1; i >= 0; i-- {
-		if l.parenStack[i] == 'D' {
+		// 'D' marks a `((` arithmetic command; 'A' marks the inner `(`
+		// of `$((` arithmetic expansion. Both make `#` an operator (the
+		// positional-arg count / char-code prefix), not a comment opener.
+		if l.parenStack[i] == 'D' || l.parenStack[i] == 'A' {
 			return true
 		}
 	}
@@ -361,6 +364,19 @@ var simpleBracketTokens = map[byte]token.Type{
 }
 
 func (l *Lexer) dispatchBracketsAndOps(hasSpace bool) token.Token {
+	// Inside arithmetic, / and ^ can be the lead byte of compound-
+	// assignment operators (/= and ^=). Check before the simpleBracketTokens
+	// map because that map emits them unconditionally as SLASH/CARET.
+	// Outside arithmetic / is a path component and ^ is a caret-glob;
+	// neither can precede = as an assignment, so the guard is safe.
+	if l.inArithmetic() && l.peekChar() == '=' {
+		switch l.ch {
+		case '/':
+			return l.readFusedToken(token.PLUSEQ)
+		case '^':
+			return l.readFusedToken(token.PLUSEQ)
+		}
+	}
 	if t, ok := simpleBracketTokens[l.ch]; ok {
 		return newToken(t, l.ch, l.line, l.column)
 	}
@@ -439,7 +455,17 @@ func (l *Lexer) readOpenParen() token.Token {
 		return tok
 	}
 	tok := newToken(token.LPAREN, l.ch, l.line, l.column)
-	l.parenStack = append(l.parenStack, 'P')
+	// The inner `(` of `$((` arithmetic: `suppressLparenFusion` means the
+	// previous token was `$(`, and adjacency (no space before this `(`)
+	// distinguishes `$((` arithmetic from `$( (subshell`. Mark it 'A' so
+	// inArithmetic() holds inside `$(( … ))` (e.g. a spaced `#` is the
+	// arg-count operator, not a comment) while it still closes with a
+	// single RPAREN like a plain 'P'.
+	marker := byte('P')
+	if l.suppressLparenFusion && l.position > 0 && l.input[l.position-1] == '(' {
+		marker = 'A'
+	}
+	l.parenStack = append(l.parenStack, marker)
 	return tok
 }
 
@@ -485,6 +511,15 @@ func (l *Lexer) readBangLead() token.Token {
 }
 
 func (l *Lexer) readArithCompoundOr(plain token.Type) token.Token {
+	// Inside arithmetic,  (power-assign) uses three bytes. Detect
+	// it when the current token is , the next is , and the one
+	// after that is . Outside arithmetic  is a glob and  is
+	// a recursive glob; neither form allows a trailing  operand so
+	// the guard is safe.
+	if plain == token.ASTERISK && l.inArithmetic() &&
+		l.peekChar() == '*' && l.peekAt(2) == '=' {
+		return l.readFused3Token(token.PLUSEQ)
+	}
 	if l.peekChar() == '=' {
 		return l.readFusedToken(token.PLUSEQ)
 	}
@@ -527,8 +562,22 @@ func (l *Lexer) readAmpersandLead() token.Token {
 	switch l.peekChar() {
 	case '&':
 		return l.readFusedToken(token.AND)
+	case '>':
+		// `&>file` redirects both stdout and stderr — the same operator as
+		// `>&` (GTAMP). Emit GTAMP so the existing redirection handling
+		// applies; otherwise `&` lexed as a background operator and the
+		// `>` orphaned (`if { … } &>/dev/null; then …` then desynced).
+		return l.readFusedToken(token.GTAMP)
 	case '|', '!':
 		return l.readFusedToken(token.AMPERSAND)
+	case '=':
+		// Inside arithmetic, &= is bitwise-AND-assign. Outside arithmetic
+		// & is a background operator and &= would be a background
+		// which is not valid Zsh syntax; the guard keeps outer behaviour
+		// identical to before.
+		if l.inArithmetic() {
+			return l.readFusedToken(token.PLUSEQ)
+		}
 	}
 	return newToken(token.AMPERSAND, l.ch, l.line, l.column)
 }
@@ -543,6 +592,12 @@ func (l *Lexer) readPipeLead() token.Token {
 	if l.peekChar() == '&' {
 		tok := l.readFusedToken(token.PIPE)
 		return tok
+	}
+	// Inside arithmetic, |= is bitwise-OR-assign. Outside arithmetic
+	// | is a pipe operator and |= is not valid Zsh syntax; the guard
+	// keeps pipe behaviour identical to before.
+	if l.peekChar() == '=' && l.inArithmetic() {
+		return l.readFusedToken(token.PLUSEQ)
 	}
 	return newToken(token.PIPE, l.ch, l.line, l.column)
 }
@@ -564,6 +619,23 @@ func (l *Lexer) readFusedToken(t token.Type) token.Token {
 	return token.Token{
 		Type:    t,
 		Literal: string(ch) + string(l.ch),
+		Line:    l.line,
+		Column:  l.column,
+	}
+}
+
+// readFused3Token consumes the three-byte run starting at the current
+// cursor and returns a fused token of the requested type. Used for
+// three-character arithmetic compound-assignment operators like <<=,
+// >>= and **= which are only meaningful inside (( ... )) arithmetic.
+func (l *Lexer) readFused3Token(t token.Type) token.Token {
+	ch1 := l.ch
+	l.readChar()
+	ch2 := l.ch
+	l.readChar()
+	return token.Token{
+		Type:    t,
+		Literal: string(ch1) + string(ch2) + string(l.ch),
 		Line:    l.line,
 		Column:  l.column,
 	}
@@ -614,38 +686,67 @@ func (l *Lexer) readAngleBracket(isLeft bool) token.Token {
 		return token.Token{Type: t, Literal: string(lead) + string(l.ch), Line: l.line, Column: l.column}
 	}
 	if isLeft {
-		switch peek {
-		case '<':
-			tok := two(token.LTLT)
-			l.consumeHeredocBody()
-			return tok
-		case '&':
-			return two(token.LTAMP)
-		case '(':
-			// Inside `[[ … ]]`, `<(` is not process substitution
-			// — `<->` numeric-range glob followed by `(...)` glob
-			// alternation. Emit a plain LT so the parser sees the
-			// `(` as the alternation opener.
-			if l.dbracketDepth > 0 {
-				return newToken(token.LT, l.ch, l.line, l.column)
-			}
-			t := two(token.LT_LPAREN)
-			l.parenStack = append(l.parenStack, 'P')
-			return t
-		case '=':
-			return two(token.LE_NUM)
-		}
-		return newToken(token.LT, l.ch, l.line, l.column)
+		return l.readLtLead(peek, two)
 	}
+	return l.readGtLead(peek, two)
+}
+
+// readLtLead handles the LT-family tokens after `<` has been consumed.
+// Extracted from readAngleBracket to keep each function under the
+// gocyclo-15 threshold.
+func (l *Lexer) readLtLead(peek byte, two func(token.Type) token.Token) token.Token {
+	switch peek {
+	case '<':
+		// Inside arithmetic, <<= is left-shift-assign. The two-byte
+		// `<<` would incorrectly trigger heredoc consumption; check
+		// for the trailing `=` first. Outside arithmetic `<<` opens
+		// a heredoc and cannot be followed by `=`, so the guard is
+		// safe and heredoc behaviour is unchanged.
+		if l.inArithmetic() && l.peekAt(2) == '=' {
+			return l.readFused3Token(token.PLUSEQ)
+		}
+		tok := two(token.LTLT)
+		l.consumeHeredocBody()
+		return tok
+	case '&':
+		return two(token.LTAMP)
+	case '(':
+		// Inside `[[ â¦ ]]`, `<(` is not process substitution
+		// â `<->` numeric-range glob followed by `(...)` glob
+		// alternation. Emit a plain LT so the parser sees the
+		// `(` as the alternation opener.
+		if l.dbracketDepth > 0 {
+			return newToken(token.LT, l.ch, l.line, l.column)
+		}
+		t := two(token.LT_LPAREN)
+		l.parenStack = append(l.parenStack, 'P')
+		return t
+	case '=':
+		return two(token.LE_NUM)
+	}
+	return newToken(token.LT, l.ch, l.line, l.column)
+}
+
+// readGtLead handles the GT-family tokens after `>` has been consumed.
+// Extracted from readAngleBracket to keep each function under the
+// gocyclo-15 threshold.
+func (l *Lexer) readGtLead(peek byte, two func(token.Type) token.Token) token.Token {
 	switch peek {
 	case '>':
+		// Inside arithmetic, >>= is right-shift-assign. Check before
+		// emitting the plain GTGT; outside arithmetic >> is an append
+		// redirection and >>= is not a valid redirect target, so the
+		// guard is safe and redirection behaviour is unchanged.
+		if l.inArithmetic() && l.peekAt(2) == '=' {
+			return l.readFused3Token(token.PLUSEQ)
+		}
 		return two(token.GTGT)
 	case '&':
 		return two(token.GTAMP)
 	case '=':
 		return two(token.GE_NUM)
 	case '(':
-		// Inside `[[ … ]]`, `>(` is not process substitution —
+		// Inside `[[ â¦ ]]`, `>(` is not process substitution â
 		// `<->(...)` numeric-range glob followed by alternation.
 		// Emit a plain GT so the parser sees `(` as the opener.
 		if l.dbracketDepth > 0 {
@@ -754,7 +855,7 @@ func extractHeredocDelim(input string, pos int) (string, int) {
 		pos++
 	}
 	start := pos
-	for pos < len(input) && (isWordByte(input[pos])) {
+	for pos < len(input) && isWordByte(input[pos]) {
 		pos++
 	}
 	if pos == start {
@@ -1055,6 +1156,9 @@ func (l *Lexer) readStringFlavour(quote byte, honourEscapes bool) string {
 		if honourEscapes && l.absorbEmbeddedDollarParen() {
 			continue
 		}
+		if l.absorbNestedQuoteInBrace(braceDepth) {
+			continue
+		}
 		l.trackBraceDepth(&braceDepth)
 	}
 	return l.sliceClosedString(position)
@@ -1085,6 +1189,21 @@ func (l *Lexer) absorbEmbeddedDollarParen() bool {
 					break
 				}
 			}
+		case '"':
+			// Scan a double-quoted span as a unit so a literal `'`
+			// (e.g. `"it's"`) does not open a bogus single-quote scan and
+			// a literal `)` inside the string does not unbalance depth.
+			// Inside double quotes a backslash escapes the next byte.
+			for l.ch != 0 {
+				l.readChar()
+				if l.ch == '\\' {
+					l.readChar()
+					continue
+				}
+				if l.ch == '"' {
+					break
+				}
+			}
 		case '(':
 			depth++
 		case ')':
@@ -1102,6 +1221,34 @@ func (l *Lexer) absorbStringEscape(honourEscapes bool) bool {
 	return true
 }
 
+// absorbNestedQuoteInBrace skips a quoted span nested inside a `${…}`
+// expansion (braceDepth > 0) so that braces inside it never reach the
+// depth tracker. zsh treats a `${…}` body's `"…"` / `'…'` as data; its
+// braces — including escaped `\${` / `\}` forms — must not open or
+// close the expansion. Without this, the unbalanced `'…\${+f[p10k]\}…'`
+// span in powerlevel10k's p10k.zsh inflated the depth and swallowed the
+// string's closing quote, cascading every later string. A double-quoted
+// span honours `\` escapes; a single-quoted span is literal. Issue #1377.
+func (l *Lexer) absorbNestedQuoteInBrace(braceDepth int) bool {
+	if braceDepth == 0 || (l.ch != '"' && l.ch != '\'') {
+		return false
+	}
+	q := l.ch
+	for {
+		l.readChar()
+		if l.ch == 0 {
+			return true
+		}
+		if q == '"' && l.ch == '\\' {
+			l.readChar()
+			continue
+		}
+		if l.ch == q {
+			return true
+		}
+	}
+}
+
 func (l *Lexer) absorbDollarBraceOpen(honourEscapes bool, braceDepth *int) bool {
 	if !honourEscapes || l.ch != '$' || l.peekChar() != '{' {
 		return false
@@ -1112,13 +1259,14 @@ func (l *Lexer) absorbDollarBraceOpen(honourEscapes bool, braceDepth *int) bool 
 }
 
 func (l *Lexer) trackBraceDepth(braceDepth *int) {
-	if *braceDepth == 0 {
-		return
-	}
-	switch l.ch {
-	case '{':
-		*braceDepth++
-	case '}':
+	// Inside a `${…}` only a nested `${` increases nesting, and that
+	// open is counted by absorbDollarBraceOpen. A bare `{` is literal
+	// data — zsh closes the expansion at the next unescaped `}`
+	// (`"${x:-a{b}"` is the value of `x`, the `{` is a literal byte) —
+	// so a lone `{` must not increment the depth. Braces hidden inside
+	// a nested quoted span are skipped earlier by absorbNestedQuoteInBrace.
+	// Decrement on `}` only.
+	if *braceDepth > 0 && l.ch == '}' {
 		*braceDepth--
 	}
 }

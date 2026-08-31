@@ -127,21 +127,12 @@ let counter=counter+1
 	}
 }
 
-func TestFixIntegration_ZC1004_ExitToReturn(t *testing.T) {
-	src := `foo() {
-  if [[ -z "$1" ]]; then
-    exit 1
-  fi
-  exit
-}
-`
-	want := `foo() {
-  if [[ -z "$1" ]]; then
-    return 1
-  fi
-  return
-}
-`
+func TestFixIntegration_ZC1013_LetCompoundAssign(t *testing.T) {
+	// A compound assignment operator must survive the rewrite. The
+	// operator is the run of arithmetic characters before `=`, so
+	// `index+=1` becomes `(( index += 1 ))`, not `(( index+ = 1 ))`.
+	src := "let index+=1\n"
+	want := "(( index += 1 ))\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -242,8 +233,10 @@ func TestFixIntegration_ZC1055_LeftEmpty(t *testing.T) {
 }
 
 func TestFixIntegration_ZC1017_PrintAddR(t *testing.T) {
-	src := `print "hello"` + "\n"
-	want := `print -r "hello"` + "\n"
+	// ZC1017 fires only when the string carries a backslash escape that
+	// `print` would interpret without `-r`.
+	src := `print "a\tb"` + "\n"
+	want := `print -r "a\tb"` + "\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -338,7 +331,7 @@ func TestFixIntegration_ZC1061_SeqSingleArg(t *testing.T) {
 	// ZC1085 also fires and wraps the for-loop item in quotes; the
 	// combined output shows both rewrites applied in one pass.
 	src := "for i in $(seq 5); do :; done\n"
-	want := `for i in "$({1..5})"; do :; done` + "\n"
+	want := `for i in $({1..5}); do :; done` + "\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -346,7 +339,7 @@ func TestFixIntegration_ZC1061_SeqSingleArg(t *testing.T) {
 
 func TestFixIntegration_ZC1061_SeqTwoArgs(t *testing.T) {
 	src := "for i in $(seq 3 8); do :; done\n"
-	want := `for i in "$({3..8})"; do :; done` + "\n"
+	want := `for i in $({3..8}); do :; done` + "\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -354,7 +347,7 @@ func TestFixIntegration_ZC1061_SeqTwoArgs(t *testing.T) {
 
 func TestFixIntegration_ZC1061_SeqThreeArgs(t *testing.T) {
 	src := "for i in $(seq 1 2 10); do :; done\n"
-	want := `for i in "$({1..10..2})"; do :; done` + "\n"
+	want := `for i in $({1..10..2}); do :; done` + "\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -367,41 +360,14 @@ func TestFixIntegration_ZC1061_SeqVariableArgsSkipped(t *testing.T) {
 	}
 }
 
-func TestFixIntegration_ZC1079_QuoteRhsInBrackets(t *testing.T) {
-	src := `[[ $x == $y ]]` + "\n"
-	want := `[[ $x == "$y" ]]` + "\n"
-	if got := runFix(t, src); got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestFixIntegration_ZC1079_AlreadyQuotedRhsUnchanged(t *testing.T) {
-	src := `[[ $x == "$y" ]]` + "\n"
-	if got := runFix(t, src); got != src {
-		t.Errorf("quoted RHS should be idempotent, got %q", got)
-	}
-}
-
-func TestFixIntegration_ZC1085_QuoteForLoopExpansion(t *testing.T) {
+// ZC1085 no longer quotes for-loop expansions (quoting collapses
+// arrays); the former QuoteForLoopExpansion / ArrayExpansionQuoted
+// autofix tests were removed with that behavior. `for f in $files`
+// stays unquoted, which is the correct Zsh idiom.
+func TestFixIntegration_ZC1085_ForLoopExpansionLeftUnquoted(t *testing.T) {
 	src := "for f in $files; do :; done\n"
-	want := `for f in "$files"; do :; done` + "\n"
-	if got := runFix(t, src); got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestFixIntegration_ZC1085_ArrayExpansionQuoted(t *testing.T) {
-	src := "for f in ${files[@]}; do :; done\n"
-	want := `for f in "${files[@]}"; do :; done` + "\n"
-	if got := runFix(t, src); got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestFixIntegration_ZC1085_AlreadyQuotedUnchanged(t *testing.T) {
-	src := `for f in "$files"; do :; done` + "\n"
 	if got := runFix(t, src); got != src {
-		t.Errorf("quoted input should be idempotent, got %q", got)
+		t.Errorf("for-loop expansion should stay unquoted, got %q", got)
 	}
 }
 
@@ -535,21 +501,6 @@ func TestFixIntegration_ZC1124_CatDevNullTruncate(t *testing.T) {
 	want := ": > file\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestFixIntegration_ZC1128_TouchToEmptyRedirect(t *testing.T) {
-	src := "touch file\n"
-	want := "> file\n"
-	if got := runFix(t, src); got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestFixIntegration_ZC1128_TouchWithFlagsUnchanged(t *testing.T) {
-	src := "touch -t 202504240000 file\n"
-	if got := runFix(t, src); got != src {
-		t.Errorf("flagged touch should stay, got %q", got)
 	}
 }
 
@@ -699,6 +650,23 @@ func TestFixIntegration_ZC1231_GitCloneShallow(t *testing.T) {
 	want := "git clone --depth 1 https://github.com/x/y\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A clone that already limits its history is left alone. Inserting a second
+// history-limiting option is never an improvement: git refuses `--depth`
+// together with `--shallow-since`, and a second `--depth` silently overrides
+// the first.
+func TestFixIntegration_ZC1231_ShallowCloneUntouched(t *testing.T) {
+	for _, src := range []string{
+		"git clone --depth=1 https://github.com/x/y\n",
+		"git clone --depth=50 https://github.com/x/y\n",
+		"git clone --shallow-since=2024-01-01 https://github.com/x/y\n",
+		"git clone --shallow-exclude=refs/tags/v1 https://github.com/x/y\n",
+	} {
+		if got := runFix(t, src); got != src {
+			t.Errorf("got %q, want it unchanged", got)
+		}
 	}
 }
 
@@ -916,7 +884,7 @@ func TestFixIntegration_ZC1015_BackticksAlias(t *testing.T) {
 
 func TestFixIntegration_ZC1276_SeqAlias(t *testing.T) {
 	src := "for i in $(seq 5); do :; done\n"
-	want := `for i in "$({1..5})"; do :; done` + "\n"
+	want := `for i in $({1..5}); do :; done` + "\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -1099,8 +1067,10 @@ func TestFixIntegration_ZC1377_BashAliasesInEcho(t *testing.T) {
 }
 
 func TestFixIntegration_ZC1378_DirstackInPrint(t *testing.T) {
+	// ZC1378 renames the variable; ZC1017 does not add `-r` because the
+	// string has no backslash escape to interpret.
 	src := `print "$DIRSTACK"` + "\n"
-	want := `print -r "$dirstack"` + "\n"
+	want := `print "$dirstack"` + "\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -1317,11 +1287,19 @@ func TestFixIntegration_ZC1675_ExportStripFlag(t *testing.T) {
 	}
 }
 
-func TestFixIntegration_ZC1273_GrepDevNullToDashQ(t *testing.T) {
-	src := "grep PAT file /dev/null\n"
-	want := "grep -q PAT file\n"
-	if got := runFix(t, src); got != want {
-		t.Errorf("got %q, want %q", got, want)
+// ZC1273 reports without rewriting. The two forms differ in exit status
+// under `setopt pipefail`, in what happens to stderr, and in how much input
+// is read, so the source must come back untouched.
+func TestFixIntegration_ZC1273_ReportsWithoutRewriting(t *testing.T) {
+	for _, src := range []string{
+		"grep PAT file > /dev/null\n",
+		"grep PAT file >/dev/null\n",
+		"grep PAT file /dev/null\n",
+		"grep PAT file &> /dev/null\n",
+	} {
+		if got := runFix(t, src); got != src {
+			t.Errorf("ZC1273 rewrote %q into %q; it must only report", src, got)
+		}
 	}
 }
 
@@ -1362,6 +1340,8 @@ func TestFixIntegration_ZC1016_ReadSensitive(t *testing.T) {
 }
 
 func TestFixIntegration_ZC1043_LocalForFunctionVar(t *testing.T) {
+	// `name()` function bodies are linted and fixed: ZC1043 adds `local`
+	// and the echo->print kata rewrites `echo $bar`. Both apply.
 	src := `foo() {
   bar=42
   echo $bar
@@ -1369,7 +1349,7 @@ func TestFixIntegration_ZC1043_LocalForFunctionVar(t *testing.T) {
 `
 	want := `foo() {
   local bar=42
-  echo $bar
+  print -r -- $bar
 }
 `
 	if got := runFix(t, src); got != want {
@@ -1378,9 +1358,10 @@ func TestFixIntegration_ZC1043_LocalForFunctionVar(t *testing.T) {
 }
 
 func TestFixIntegration_ZC1043_AlreadyLocal(t *testing.T) {
+	// Already `local` and already `print` — ZC1043 must not re-apply.
 	src := `foo() {
   local bar=42
-  echo $bar
+  print -r -- $bar
 }
 `
 	if got := runFix(t, src); got != src {
@@ -1599,6 +1580,41 @@ func TestFixIntegration_ZC1293_TestToDoubleBracket(t *testing.T) {
 	}
 }
 
+// A redirection is not part of the test expression, so the closing bracket
+// goes before it. Wrapping it inside produces `[[ -f f 2>/dev/null ]]`,
+// which Zsh rejects.
+// The `]` that ends a test is not always the first one: a glob character
+// class or a glob qualifier can carry its own. Doubling the wrong bracket
+// produced `[[ -e f(.,@[1]]) ]`, which Zsh rejects.
+func TestFixIntegration_ZC1010_ClosingBracketPastNestedBrackets(t *testing.T) {
+	cases := map[string]string{
+		"[ -e \"$1\"/*\"$2\"(.,@[1]) ]\n": "[[ -e \"$1\"/*\"$2\"(.,@[1]) ]]\n",
+		"[ -e file[1] ]\n":                "[[ -e file[1] ]]\n",
+		"[ -e \"${arr[1]}\" ]\n":          "[[ -e \"${arr[1]}\" ]]\n",
+	}
+	for src, want := range cases {
+		if got := runFix(t, src); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestFixIntegration_ZC1293_RedirectStaysOutsideBrackets(t *testing.T) {
+	cases := map[string]string{
+		"test -f f 2>/dev/null\n":  "[[ -f f ]] 2>/dev/null\n",
+		"test -f f 2> /dev/null\n": "[[ -f f ]] 2> /dev/null\n",
+		"test -f f >/dev/null\n":   "[[ -f f ]] >/dev/null\n",
+		// Nothing but a redirection follows the command name, so there is
+		// no expression to wrap and the source is left alone.
+		"test 2>/dev/null\n": "test 2>/dev/null\n",
+	}
+	for src, want := range cases {
+		if got := runFix(t, src); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
 func TestFixIntegration_ZC1293_AlreadyDoubleBracket(t *testing.T) {
 	src := "[[ -f /etc/passwd ]]\n"
 	if got := runFix(t, src); got != src {
@@ -1656,14 +1672,6 @@ func TestFixIntegration_ZC1201_RloginToSsh(t *testing.T) {
 func TestFixIntegration_ZC1685_SleepInfinityToExecTail(t *testing.T) {
 	src := "sleep infinity\n"
 	want := "exec tail -f /dev/null\n"
-	if got := runFix(t, src); got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestFixIntegration_ZC1069_LocalToTypesetAtFileScope(t *testing.T) {
-	src := "local x=1\n"
-	want := "typeset x=1\n"
 	if got := runFix(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

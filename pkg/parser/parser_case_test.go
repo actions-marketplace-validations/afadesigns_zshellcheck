@@ -28,8 +28,33 @@ func TestParseCaseStatementEmptyClauses(t *testing.T) {
 	parseSourceClean(t, "case $x in a) ;; b) ;; esac\n")
 }
 
+func TestParseCaseStatementBraceForm(t *testing.T) {
+	parseSourceClean(t, "case $x { a) echo a ;; b) echo b ;; }\n")
+}
+
+func TestParseCaseStatementBraceFormEsacClose(t *testing.T) {
+	// A brace-opened case may close with `esac`; zsh accepts the mix.
+	parseSourceClean(t, "case $x { a) echo a ;; esac\n")
+}
+
+func TestParseCaseStatementBraceFormFinalClauseNoSemis(t *testing.T) {
+	parseSourceClean(t, "case $x { a) echo a }\n")
+}
+
+func TestParseCaseStatementBraceFormNested(t *testing.T) {
+	parseSourceClean(t, "case x { a) case y in 1) echo n ;; esac ;; }\n")
+}
+
 func TestParseAnonymousFunction(t *testing.T) {
 	parseSourceClean(t, "() { echo anon; }\n")
+}
+
+// A leading-zero word with an 8 or 9 digit (`008`) is a string in a
+// scalar assignment, not a C-style octal literal; it must parse, not
+// error with "could not parse 008 as integer".
+func TestParseLeadingZeroNonOctalLiteral(t *testing.T) {
+	parseSourceClean(t, "c=008\n")
+	parseSourceClean(t, "a=(008 009 010)\n")
 }
 
 func TestParseShebang(t *testing.T) {
@@ -38,6 +63,13 @@ func TestParseShebang(t *testing.T) {
 
 func TestParseDoubleBracketTest(t *testing.T) {
 	parseSourceClean(t, "[[ -f file && -r file ]]\n")
+}
+
+// `(( … ))` inside `[[ … ]]` is two grouping parens, not arithmetic.
+// The fused `((` rewrites to `(`; the matching `))` collapses to `)`.
+func TestParseDoubleBracketDoubleParenGrouping(t *testing.T) {
+	parseSourceClean(t, "[[ (( 1 )) ]]\n")
+	parseSourceClean(t, "[[ (( 1 )) && -f x ]]\n")
 }
 
 func TestParseDoubleBracketRegex(t *testing.T) {
@@ -95,6 +127,39 @@ func TestParseArrayAssignmentsInsideSubshellNewlineSeparated(t *testing.T) {
 	parseSourceClean(t, "(\narr=( \"x\" )\nlist=( \"y\" )\n)\n")
 }
 
+// Two top-level subshells separated only by a newline. The newline
+// emits no token, so parseSubshellStatement's trailing nextToken plus
+// the program loop's nextToken double-advanced and swallowed the
+// second `(`. A `;` between them masked the bug by supplying a
+// throwaway token. parseSubshellStatement now leaves curToken on its
+// `)` and signals consumedParenTerminator, mirroring `$(…)`. Issue
+// #1355.
+func TestParseConsecutiveSubshellsNewlineSeparated(t *testing.T) {
+	parseSourceClean(t, "(printf a)\n(printf b)\n")
+	parseSourceClean(t, "(printf a)\n(printf b)\n(printf c)\n")
+	parseSourceClean(t, "(cd /var && ls)\n(echo two)\n")
+}
+
+// A subshell may head a pipeline / logical chain. Leaving curToken on
+// the `)` must not regress the tail attach.
+func TestParseSubshellPipelineAndLogicalTail(t *testing.T) {
+	parseSourceClean(t, "(a) | cat\n")
+	parseSourceClean(t, "(a) && (b)\n")
+	parseSourceClean(t, "(a) > /dev/null\n")
+}
+
+// A final `case … esac` inside a subshell advances past `esac` onto
+// the subshell's `)` and sets consumedBraceTerminator. That signal
+// leaks through parseBlockStatement's terminator break;
+// parseSubshellStatement must clear it when claiming its `)`, or the
+// program loop skips the advance and the `)` parses as a bare
+// statement. Guards the #1355 fix against the case interaction.
+func TestParseCaseAsFinalSubshellStatement(t *testing.T) {
+	parseSourceClean(t, "( case $x in a) :;; esac )\n")
+	parseSourceClean(t, "( case $x { a) :;; } )\n")
+	parseSourceClean(t, "case $y in z) (a)\n(b);; esac\n")
+}
+
 // `${#}` is the special parameter "count of positional args", not a
 // length operator over a missing subject. Without RBRACE in the
 // subjectIsEmpty set, parseArrayAccess advanced past `#` looking for
@@ -121,6 +186,14 @@ func TestParseDollarBraceFlagsKeywordSubject(t *testing.T) {
 // `${${X## ##}%%y##}` once a space appeared inside the modifier.
 func TestParseDollarBraceHashAfterSpaceNotComment(t *testing.T) {
 	parseSourceClean(t, "H=${${X## ##}%%y##}\n")
+}
+
+// A single quote inside a double-quoted command substitution nested in
+// `${…}` is literal. The embedded-`$()` scanner must scan the `"…"`
+// span as a unit, not treat the `'` in `it's` as a single-quote opener
+// that runs to EOF. Issue #1357.
+func TestParseDollarBraceDoubleQuotedSquoteCommandSub(t *testing.T) {
+	parseSourceClean(t, `echo ${"$(echo "it's")"}`+"\n")
 }
 
 // Zsh glob qualifiers `#` / `##` attach to the preceding pattern
@@ -158,6 +231,19 @@ func TestParseIfShortcutInsideStandardIfThenFi(t *testing.T) {
 		"    print fi\n" +
 		"  fi\n" +
 		"}\n"
+	parseSourceClean(t, src)
+}
+
+// `elif (( … ))` after a `case … esac` in the preceding then-body. The
+// `case` left consumedBraceTerminator set; it leaked into the elif
+// condition's parseBlockStatement, which skipped its post-statement
+// advance and dropped onto `))` with no prefix handler. Issue #1358.
+func TestParseElifArithAfterCaseInThenBody(t *testing.T) {
+	src := "if (( 1 )); then\n" +
+		"  case x in p) ;; esac\n" +
+		"elif (( 1 )); then\n" +
+		"  :\n" +
+		"fi\n"
 	parseSourceClean(t, src)
 }
 
@@ -309,6 +395,37 @@ func TestParseIfShortcutInsideFunctionBody(t *testing.T) {
 
 func TestParseProcessSubstitution(t *testing.T) {
 	parseSourceClean(t, "diff <(sort a) <(sort b)\n")
+}
+
+// A process substitution inside a subshell body must leave the body's
+// own `)` for the block to consume. parseProcessSubstitution used to
+// return on its own `)` without signalling consumedParenTerminator, so
+// the subshell ended early and the statements after `cmd 2> >(tee log)`
+// were dropped (then the real `)` errored). Issue #1356.
+func TestParseProcessSubInSubshellBody(t *testing.T) {
+	parseSourceClean(t, "(\n  cmd 2> >(tee log)\n  echo done\n)\n")
+}
+
+// A command substitution whose body is a subshell — `$( (cmd) )` — must
+// parse: the inner subshell's `)` is consumed via consumedParenTerminator
+// and is not mistaken for the command-substitution's close. The space
+// after `$(` makes it a subshell, not arithmetic. Issue #1375.
+func TestParseCommandSubOfSubshell(t *testing.T) {
+	parseSourceClean(t, "s=$( (echo hi) )\n")
+	parseSourceClean(t, "x=$( (a; b) )\n")
+	parseSourceClean(t, "y=$( ( echo x ) | cat )\n")
+}
+
+// A `case … esac` or a `{ } always { }` try block inside a command
+// substitution `$( … )` must parse. The body drain now honours
+// consumedBraceTerminator (a `case` advances past its own `esac`) and
+// the `always` continuation, with `;` and newline separators. Issue #1359.
+func TestParseCaseAndAlwaysInCommandSub(t *testing.T) {
+	parseSourceClean(t, "v=$( case x in a) : ;; esac )\n")
+	parseSourceClean(t, "echo $( case x in a) : ;; esac )\n")
+	parseSourceClean(t, "v=$( { : } always { : } )\n")
+	parseSourceClean(t, "n=$( case x in a) : ;; esac; echo two )\n")
+	parseSourceClean(t, "p=$( case x in a) : ;; esac\n  echo two )\n")
 }
 
 func TestParseSelectStatement(t *testing.T) {

@@ -213,8 +213,8 @@ func checkZC1502(node ast.Node) []Violation {
 	}
 	return []Violation{{
 		KataID: "ZC1502",
-		Message: "Variable `" + firstVar.String() + "` used as pattern without `--` end-of-flags " +
-			"marker — attacker-controlled leading `-` becomes a flag. Write `grep -- \"$var\"`.",
+		Message: "Variable `" + firstVar.String() + "` passed without a `--` end-of-flags " +
+			"marker — an attacker-controlled leading `-` becomes a flag. Write `grep -- \"$var\"`.",
 		Line:   cmd.Token.Line,
 		Column: cmd.Token.Column,
 		Level:  SeverityWarning,
@@ -886,10 +886,10 @@ func checkZC1514(node ast.Node) []Violation {
 		return nil
 	}
 
-	var prevP bool
-	for _, arg := range cmd.Arguments {
-		v := arg.String()
-		if prevP && v != "" && v[0] != '-' {
+	// The hash is just as exposed when written inline as `--password=<hash>`.
+	for i := range cmd.Arguments {
+		hash, _ := FlagValueAt(cmd.Arguments, i, "-p", "--password")
+		if hash != "" && hash[0] != '-' {
 			return []Violation{{
 				KataID: "ZC1514",
 				Message: "`" + ident.Value + " -p <hash>` puts the hashed password in ps / " +
@@ -899,7 +899,6 @@ func checkZC1514(node ast.Node) []Violation {
 				Level:  SeverityError,
 			}}
 		}
-		prevP = (v == "-p" || v == "--password")
 	}
 	return nil
 }
@@ -1221,7 +1220,10 @@ func checkZC1521(node ast.Node) []Violation {
 	// Any filter flag present → skip.
 	for _, arg := range cmd.Arguments {
 		v := arg.String()
-		if v == "-e" || v == "--trace" || v == "--trace-path" || v == "-P" {
+		// strace documents both as taking an inline value:
+		// `--trace=syscall_set`, `--trace-path=path`.
+		name, _ := LongFlagName(v)
+		if name == "-e" || name == "--trace" || name == "--trace-path" || name == "-P" {
 			return nil
 		}
 	}
@@ -1319,24 +1321,18 @@ func checkZC1523(node ast.Node) []Violation {
 		return nil
 	}
 
-	var prevC bool
-	for _, arg := range cmd.Arguments {
-		v := arg.String()
-		if prevC {
-			prevC = false
-			if v == "/" {
-				return []Violation{{
-					KataID: "ZC1523",
-					Message: "`tar -C /` extracts into the filesystem root — overwrites any " +
-						"path that happens to be inside the archive. Stage, inspect, then copy.",
-					Line:   cmd.Token.Line,
-					Column: cmd.Token.Column,
-					Level:  SeverityError,
-				}}
-			}
-		}
-		if v == "-C" || v == "--directory" {
-			prevC = true
+	// tar documents the directory inline as `--directory=DIR` as well as
+	// spaced, and both extract into the same place.
+	for i := range cmd.Arguments {
+		if dir, _ := FlagValueAt(cmd.Arguments, i, "-C", "--directory"); dir == "/" {
+			return []Violation{{
+				KataID: "ZC1523",
+				Message: "`tar -C /` extracts into the filesystem root — overwrites any " +
+					"path that happens to be inside the archive. Stage, inspect, then copy.",
+				Line:   cmd.Token.Line,
+				Column: cmd.Token.Column,
+				Level:  SeverityError,
+			}}
 		}
 	}
 	return nil
@@ -3331,7 +3327,8 @@ func checkZC1560(node ast.Node) []Violation {
 	}
 
 	for _, arg := range cmd.Arguments {
-		if arg.String() == "--trusted-host" {
+		// pip accepts `--trusted-host=host` as well as the spaced form.
+		if name, _ := LongFlagName(arg.String()); name == "--trusted-host" {
 			return []Violation{{
 				KataID: "ZC1560",
 				Message: "`pip --trusted-host` skips TLS verification and allows plain-HTTP " +
@@ -3423,25 +3420,19 @@ func checkZC1562(node ast.Node) []Violation {
 		return nil
 	}
 
-	var prevU bool
-	for _, arg := range cmd.Arguments {
-		v := arg.String()
-		if prevU {
-			prevU = false
-			switch v {
-			case "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT":
-				return []Violation{{
-					KataID: "ZC1562",
-					Message: "`env -u " + v + "` clears a security-relevant variable mid-run. " +
-						"Use `env -i` to sanitise, or set the right value explicitly.",
-					Line:   cmd.Token.Line,
-					Column: cmd.Token.Column,
-					Level:  SeverityWarning,
-				}}
-			}
-		}
-		if v == "-u" || v == "--unset" {
-			prevU = true
+	// env documents the name inline as well: `env --unset=PATH`.
+	for i := range cmd.Arguments {
+		name, _ := FlagValueAt(cmd.Arguments, i, "-u", "--unset")
+		switch name {
+		case "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT":
+			return []Violation{{
+				KataID: "ZC1562",
+				Message: "`env -u " + name + "` clears a security-relevant variable mid-run. " +
+					"Use `env -i` to sanitise, or set the right value explicitly.",
+				Line:   cmd.Token.Line,
+				Column: cmd.Token.Column,
+				Level:  SeverityWarning,
+			}}
 		}
 	}
 	return nil
@@ -3518,7 +3509,8 @@ func checkZC1564(node ast.Node) []Violation {
 
 	if ident.Value == "date" {
 		for _, arg := range cmd.Arguments {
-			if arg.String() == "-s" || arg.String() == "--set" {
+			// GNU date documents `--set=STRING`.
+			if name, _ := LongFlagName(arg.String()); name == "-s" || name == "--set" {
 				return zc1564Violation(cmd, "date -s")
 			}
 		}
@@ -4374,7 +4366,8 @@ func checkZC1579(node ast.Node) []Violation {
 		if v == "--retry-all-errors" {
 			hasRetryAll = true
 		}
-		if v == "--max-time" || v == "-m" {
+		// curl accepts `--max-time=5` as well as `--max-time 5`.
+		if name, _ := LongFlagName(v); name == "--max-time" || name == "-m" {
 			hasMaxTime = true
 		}
 	}

@@ -5,13 +5,44 @@ package main
 import (
 	"bytes"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/afadesigns/zshellcheck/pkg/config"
 	"github.com/afadesigns/zshellcheck/pkg/katas"
+	"github.com/afadesigns/zshellcheck/pkg/reporter"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write(p []byte) (int, error) { return 0, io.ErrShortWrite }
+
+func TestEmitAggregate(t *testing.T) {
+	files := []reporter.FileViolations{
+		{Filename: "x.zsh", Violations: []katas.Violation{
+			{KataID: "ZC1", Message: "m", Line: 1, Column: 1, Level: katas.SeverityError},
+		}},
+	}
+	var buf bytes.Buffer
+	emitAggregate(&buf, &buf, "json", files)
+	if !strings.Contains(buf.String(), "ZC1") {
+		t.Error("json aggregate missing finding")
+	}
+	buf.Reset()
+	emitAggregate(&buf, &buf, "sarif", files)
+	if !strings.Contains(buf.String(), "2.1.0") {
+		t.Error("sarif aggregate missing version")
+	}
+	// Error branch: a writer that always fails.
+	var errBuf bytes.Buffer
+	emitAggregate(failingWriter{}, &errBuf, "json", files)
+	if !strings.Contains(errBuf.String(), "Error reporting") {
+		t.Errorf("expected error reported, got %q", errBuf.String())
+	}
+}
 
 // resetFlags resets the global flag.CommandLine for testing run().
 func resetFlags() {
@@ -410,7 +441,7 @@ func TestCollectEdits_ParseError(t *testing.T) {
 	src := "if true; then echo \"unterminated\n"
 	registry := katas.Registry
 	cfg := config.DefaultConfig()
-	edits := collectEdits(src, registry, nil, cfg, nil)
+	edits := collectEdits(src, registry, nil, cfg, nil, true)
 	if edits != nil {
 		t.Errorf("expected nil edits on parse error, got %d", len(edits))
 	}
@@ -424,7 +455,7 @@ func TestCollectEdits_FileWideDirective(t *testing.T) {
 	src := "x=`date`\n# noka: ZC1002\n"
 	registry := katas.Registry
 	cfg := config.DefaultConfig()
-	edits := collectEdits(src, registry, nil, cfg, nil)
+	edits := collectEdits(src, registry, nil, cfg, nil, true)
 	for _, e := range edits {
 		_ = e
 	}
@@ -434,7 +465,7 @@ func TestApplyFixesUntilStable_Idempotent(t *testing.T) {
 	src := "#!/bin/zsh\necho hello\n"
 	cfg := config.DefaultConfig()
 	registry := katas.Registry
-	out, n, err := applyFixesUntilStable(src, nil, registry, nil, cfg, nil, 5)
+	out, n, err := applyFixesUntilStable(src, nil, registry, nil, cfg, nil, 5, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -450,11 +481,11 @@ func TestApplyFixesUntilStable_RewritesBackticks(t *testing.T) {
 	src := "x=`which git`\n"
 	cfg := config.DefaultConfig()
 	registry := katas.Registry
-	initial := collectEdits(src, registry, nil, cfg, nil)
+	initial := collectEdits(src, registry, nil, cfg, nil, true)
 	if len(initial) == 0 {
 		t.Skip("no auto-fix katas fired on the input; coverage path not exercised")
 	}
-	out, n, err := applyFixesUntilStable(src, initial, registry, nil, cfg, nil, 5)
+	out, n, err := applyFixesUntilStable(src, initial, registry, nil, cfg, nil, 5, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -463,6 +494,226 @@ func TestApplyFixesUntilStable_RewritesBackticks(t *testing.T) {
 	}
 	if out == src {
 		t.Errorf("expected source rewrite, got identity")
+	}
+}
+
+// Auto-fix must never write source that parses worse than the input.
+// These inputs trigger colliding fixes (ZC1073 deleting `$` while ZC1001
+// rewrites the same subscript; the `[ ]`->`[[ ]]` rewrite over an array
+// subscript) that used to corrupt the source.
+func TestApplyFixesUntilStable_NeverBreaksParse(t *testing.T) {
+	cfg := config.DefaultConfig()
+	registry := katas.Registry
+	for _, src := range []string{
+		"(( $reply[x] )) && return\n",
+		"if [ $commands[oc] ]; then :; fi\n",
+	} {
+		initial := collectEdits(src, registry, nil, cfg, nil, true)
+		out, _, err := applyFixesUntilStable(src, initial, registry, nil, cfg, nil, 5, true)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", src, err)
+		}
+		if got := parseErrorCount(out); got != 0 {
+			t.Errorf("auto-fix introduced %d parse error(s) for %q:\n%s", got, src, out)
+		}
+	}
+}
+
+// The ZC1001 subscript fix produces `${arr[x]}`, never the brace-stripped
+// `{arr[x]}` that resulted when its `{`/`}` inserts straddled ZC1073's
+// `$` deletion inside `(( … ))`.
+func TestApplyFixesUntilStable_ArithSubscript(t *testing.T) {
+	cfg := config.DefaultConfig()
+	registry := katas.Registry
+	src := "(( $reply[x] )) && return\n"
+	out, _, err := applyFixesUntilStable(src, collectEdits(src, registry, nil, cfg, nil, true), registry, nil, cfg, nil, 5, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out, "{reply[x]}") && !strings.Contains(out, "${reply[x]}") {
+		t.Errorf("ZC1001 dropped the `$`: %q", out)
+	}
+}
+
+// The ZC1040 nullglob fix must not stack qualifiers on repeated runs.
+func TestApplyFixesUntilStable_NullglobIdempotent(t *testing.T) {
+	cfg := config.DefaultConfig()
+	registry := katas.Registry
+	src := "for f in *.txt; do print -r -- $f; done\n"
+	once, _, _ := applyFixesUntilStable(src, collectEdits(src, registry, nil, cfg, nil, true), registry, nil, cfg, nil, 5, true)
+	twice, _, _ := applyFixesUntilStable(once, collectEdits(once, registry, nil, cfg, nil, true), registry, nil, cfg, nil, 5, true)
+	if once != twice {
+		t.Errorf("ZC1040 fix not idempotent:\n once:  %q\n twice: %q", once, twice)
+	}
+	if !strings.Contains(once, "*.txt(N)") {
+		t.Errorf("ZC1040 fix did not apply: %q", once)
+	}
+}
+
+func TestApplySafeEdits_Bailouts(t *testing.T) {
+	base := "echo hi\n"
+	// Every candidate edit breaks the parse alone -> nothing is kept and
+	// base is returned unchanged.
+	stray := katas.FixEdit{Line: 1, Column: 1, Length: 0, Replace: "fi\n", Group: 1}
+	if out, n := applySafeEdits(base, []katas.FixEdit{stray}); out != base || n != 0 {
+		t.Errorf("all-break: want base/0, got %q/%d", out, n)
+	}
+	// Two edits from different violations are independent: the safe one is
+	// kept while the breaking one is dropped.
+	safe := katas.FixEdit{Line: 1, Column: 1, Length: 4, Replace: "print -r --", Group: 2}
+	out, n := applySafeEdits(base, []katas.FixEdit{stray, safe})
+	if n != 1 || !strings.Contains(out, "print -r --") {
+		t.Errorf("mixed: want 1 kept with rewrite, got %q/%d", out, n)
+	}
+
+	// Edits from ONE violation are atomic. A rewrite that only makes sense
+	// as a whole must not be applied in part: keeping just the operator of
+	// `[[ a -eq b ]]` would leave `[[ a == b ]]`, which parses but compares
+	// as a glob pattern instead of a number.
+	atomicBase := "if [[ $a -eq 0 ]]; then :; fi\n"
+	atomic := []katas.FixEdit{
+		{Line: 1, Column: 4, Length: 2, Replace: "((", Group: 7},
+		{Line: 1, Column: 10, Length: 3, Replace: "==", Group: 7},
+		{Line: 1, Column: 1, Length: 0, Replace: "fi\n", Group: 7},
+	}
+	if got, n := applySafeEdits(atomicBase, atomic); got != atomicBase || n != 0 {
+		t.Errorf("atomic: a group with one breaking edit must be dropped whole, got %q/%d", got, n)
+	}
+
+	// Two safe edits on different lines exercise the highest-offset-first
+	// ordering: the line-two edit applies before the line-one edit.
+	multi := "echo a\necho b\n"
+	e1 := katas.FixEdit{Line: 1, Column: 1, Length: 4, Replace: "print", Group: 1}
+	e2 := katas.FixEdit{Line: 2, Column: 1, Length: 4, Replace: "print", Group: 2}
+	mout, mn := applySafeEdits(multi, []katas.FixEdit{e1, e2})
+	if mn != 2 || strings.Contains(mout, "echo") {
+		t.Errorf("multiline: want both applied, got %q/%d", mout, mn)
+	}
+}
+
+func TestXdgConfigSearch(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "zshellcheck")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(sub, "config.yml")
+	if err := os.WriteFile(cfgPath, []byte("no_color: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Found under $XDG_CONFIG_HOME.
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_CONFIG_DIRS", "")
+	if got := xdgConfigSearch("zshellcheck/config.yml"); got != cfgPath {
+		t.Errorf("XDG_CONFIG_HOME search = %q, want %q", got, cfgPath)
+	}
+	// Not found anywhere.
+	if got := xdgConfigSearch("zshellcheck/missing.yml"); got != "" {
+		t.Errorf("missing search = %q, want \"\"", got)
+	}
+
+	// Found via $XDG_CONFIG_DIRS, with an empty leading element skipped.
+	// Use the OS path-list separator so the test holds on Windows (`;`).
+	empty := t.TempDir()
+	sep := string(os.PathListSeparator)
+	t.Setenv("XDG_CONFIG_HOME", empty)
+	t.Setenv("XDG_CONFIG_DIRS", sep+dir)
+	if got := xdgConfigSearch("zshellcheck/config.yml"); got != cfgPath {
+		t.Errorf("XDG_CONFIG_DIRS search = %q, want %q", got, cfgPath)
+	}
+
+	// Empty $XDG_CONFIG_HOME falls back to ~/.config (exercises the
+	// homeDir branch); the file does not exist there, so "" is returned.
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_CONFIG_DIRS", "")
+	_ = xdgConfigSearch("zshellcheck/definitely-absent-xyz.yml")
+}
+
+func TestHomeDir(t *testing.T) {
+	// Success path.
+	if homeDir() == "" {
+		t.Skip("no resolvable home directory in this environment")
+	}
+	// Error path: an unset $HOME makes os.UserHomeDir fail on Linux, so
+	// homeDir returns "". On platforms where it still resolves, the call
+	// is still exercised.
+	t.Setenv("HOME", "")
+	_ = homeDir()
+}
+
+func TestEmitStatistics(t *testing.T) {
+	counts := map[string]int{"ZC1037": 3, "ZC1075": 10}
+	var buf bytes.Buffer
+	emitStatistics(&buf, katas.Registry, counts)
+	out := buf.String()
+	// Sorted by descending count: ZC1075 (10) precedes ZC1037 (3).
+	i1075 := strings.Index(out, "ZC1075")
+	i1037 := strings.Index(out, "ZC1037")
+	if i1075 < 0 || i1037 < 0 || i1075 > i1037 {
+		t.Errorf("statistics not sorted by count desc:\n%s", out)
+	}
+	// ZC1037 ships an auto-fix and must carry the marker.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "ZC1037") && !strings.Contains(line, "[*]") {
+			t.Errorf("ZC1037 line missing fixable marker: %q", line)
+		}
+	}
+}
+
+func TestRun_Statistics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.zsh")
+	if err := os.WriteFile(path, []byte("#!/bin/zsh\nfor i in $(ls); do echo $i; done\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resetFlags()
+	old := os.Args
+	defer func() { os.Args = old }()
+	os.Args = []string{"zshellcheck", "-statistics", "-no-banner", path}
+	_ = run()
+}
+
+func TestFinalExitCode_FixableFooter(t *testing.T) {
+	n := 3
+	opts := fixOptions{fixable: &n}
+	if code := finalExitCode(5, "text", opts); code != 1 {
+		t.Errorf("want exit 1 with violations, got %d", code)
+	}
+	if code := finalExitCode(0, "text", opts); code != 0 {
+		t.Errorf("want exit 0 with no violations, got %d", code)
+	}
+}
+
+func TestRun_UnsafeFixesGate(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x=`which git`\nnetstat -a\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	old := os.Args
+	defer func() { os.Args = old }()
+
+	// Default -fix applies only the safe backtick rewrite; the unsafe
+	// netstat->ss swap is withheld.
+	safe := write("safe.zsh")
+	resetFlags()
+	os.Args = []string{"zshellcheck", "-fix", "-no-banner", safe}
+	_ = run()
+	if b, _ := os.ReadFile(safe); strings.Contains(string(b), "`which git`") || !strings.Contains(string(b), "netstat") {
+		t.Errorf("safe -fix wrong: %q", b)
+	}
+
+	// -unsafe-fixes also applies the netstat->ss swap.
+	unsafe := write("unsafe.zsh")
+	resetFlags()
+	os.Args = []string{"zshellcheck", "-fix", "-unsafe-fixes", "-no-banner", unsafe}
+	_ = run()
+	if b, _ := os.ReadFile(unsafe); strings.Contains(string(b), "netstat") {
+		t.Errorf("unsafe -fix should swap netstat: %q", b)
 	}
 }
 

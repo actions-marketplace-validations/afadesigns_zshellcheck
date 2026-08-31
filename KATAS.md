@@ -11,7 +11,7 @@ Auto-generated list of all 1000 implemented checks. Do not edit by hand — rege
 | `info` | 64 |
 | `style` | 257 |
 | **total** | **1000** |
-| **with auto-fix** | **137** |
+| **with auto-fix** | **131** |
 
 Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. Run `zshellcheck -fix path/...` to apply every available rewrite, or `-diff` to preview without writing.
 
@@ -20,7 +20,7 @@ Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. 
 - [ZC1001: Use ${} for array element access](#zc1001) · auto-fix
 - [ZC1002: Use $(...) instead of backticks](#zc1002) · auto-fix
 - [ZC1003: Use `((...))` for arithmetic comparisons instead of `\[` or `test`](#zc1003) · auto-fix
-- [ZC1004: Use `return` instead of `exit` in functions](#zc1004) · auto-fix
+- [ZC1004: Use `return` instead of `exit` in functions](#zc1004)
 - [ZC1005: Use whence instead of which](#zc1005) · auto-fix
 - [ZC1006: Prefer \[\[ over test for tests](#zc1006) · auto-fix
 - [ZC1007: Avoid using `chmod 777`](#zc1007)
@@ -67,7 +67,7 @@ Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. 
 - [ZC1048: Avoid `source` with relative paths](#zc1048)
 - [ZC1049: Prefer functions over aliases](#zc1049)
 - [ZC1050: Avoid iterating over `ls` output](#zc1050)
-- [ZC1051: Quote variables in `rm` to avoid globbing](#zc1051) · auto-fix
+- [ZC1051: Guard variables in `rm` against empty values](#zc1051) · auto-fix
 - [ZC1052: Avoid `sed -i` for portability](#zc1052)
 - [ZC1053: Silence `grep` output in conditions](#zc1053) · auto-fix
 - [ZC1054: Use POSIX classes in regex/glob](#zc1054)
@@ -85,23 +85,23 @@ Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. 
 - [ZC1066: Avoid iterating over `cat` output](#zc1066)
 - [ZC1067: Separate `export` and assignment to avoid masking return codes](#zc1067)
 - [ZC1068: Use `add-zsh-hook` instead of defining hook functions directly](#zc1068)
-- [ZC1069: Avoid `local` outside of functions](#zc1069) · auto-fix
+- [ZC1069: Avoid `local` outside of functions](#zc1069)
 - [ZC1070: Use `builtin` or `command` to avoid infinite recursion in wrapper functions](#zc1070)
 - [ZC1071: Use `+=` for appending to arrays](#zc1071)
 - [ZC1072: Use `awk` instead of `grep \| awk`](#zc1072)
 - [ZC1073: Unnecessary use of `$` in arithmetic expressions](#zc1073) · auto-fix
 - [ZC1074: Prefer modifiers :h/:t over dirname/basename](#zc1074)
-- [ZC1075: Quote variable expansions to prevent globbing](#zc1075)
+- [ZC1075: Quote variable expansions to prevent empty-word elision](#zc1075)
 - [ZC1076: Use `autoload -Uz` for lazy loading](#zc1076) · auto-fix
 - [ZC1077: Prefer `${var:u/l}` over `tr` for case conversion](#zc1077)
 - [ZC1078: Quote `$@` and `$*` when passing arguments](#zc1078) · auto-fix
-- [ZC1079: Quote RHS of `==` in `\[\[ ... \]\]` to prevent pattern matching](#zc1079) · auto-fix
+- [ZC1079: Quote RHS of `==` in `\[\[ ... \]\]` to prevent pattern matching](#zc1079)
 - [ZC1080: Use `(N)` nullglob qualifier for globs in loops](#zc1080)
 - [ZC1081: Use `${#var}` to get string length instead of `wc -c`](#zc1081)
 - [ZC1082: Prefer `${var//old/new}` over `sed` for simple replacements](#zc1082)
-- [ZC1083: Brace expansion limits cannot be variables](#zc1083)
+- [ZC1083: Quoted brace range does not expand](#zc1083)
 - [ZC1084: Quote globs in `find` commands](#zc1084) · auto-fix
-- [ZC1085: Quote variable expansions in `for` loops](#zc1085) · auto-fix
+- [ZC1085: Quote variable expansions in `for` loops](#zc1085)
 - [ZC1086: Prefer `func() { ... }` over `function func { ... }`](#zc1086) · auto-fix
 - [ZC1087: Output redirection overwrites input file](#zc1087)
 - [ZC1088: Subshell isolates state changes](#zc1088)
@@ -120,7 +120,7 @@ Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. 
 - [ZC1101: Use `$(( ))` instead of `bc` for simple arithmetic](#zc1101)
 - [ZC1102: Redirecting output of `sudo` doesn't work as expected](#zc1102)
 - [ZC1103: Suggest `path` array instead of `$PATH` string manipulation (direct assignment)](#zc1103)
-- [ZC1104: Suggest `path` array instead of `export PATH` string manipulation](#zc1104)
+- [ZC1104: Superseded by ZC1188 — retired duplicate](#zc1104)
 - [ZC1105: Avoid nested arithmetic expansions for clarity](#zc1105)
 - [ZC1106: Avoid `set -x` in production scripts for sensitive data exposure](#zc1106)
 - [ZC1107: Use (( ... )) for arithmetic conditions](#zc1107)
@@ -144,7 +144,7 @@ Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. 
 - [ZC1125: Avoid `echo \| grep` for string matching](#zc1125)
 - [ZC1126: Use `sort -u` instead of `sort \| uniq`](#zc1126) · auto-fix
 - [ZC1127: Avoid `ls` for counting files](#zc1127)
-- [ZC1128: Use `> file` instead of `touch file` for creation](#zc1128) · auto-fix
+- [ZC1128: Prefer a redirection over `touch` for a brand-new empty file](#zc1128)
 - [ZC1129: Use Zsh `stat` module instead of `wc -c` for file size](#zc1129)
 - [ZC1131: Avoid `cat file \| while read` — use redirection](#zc1131)
 - [ZC1132: Use Zsh pattern extraction instead of `grep -o`](#zc1132)
@@ -286,7 +286,7 @@ Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. 
 - [ZC1270: Use `mktemp` instead of hardcoded `/tmp` paths](#zc1270)
 - [ZC1271: Use `command -v` instead of `which` for command existence checks](#zc1271) · auto-fix
 - [ZC1272: Use `install -m` instead of separate `cp` and `chmod`](#zc1272)
-- [ZC1273: Use `grep -q` instead of redirecting grep output to `/dev/null`](#zc1273) · auto-fix
+- [ZC1273: Use `grep -q` instead of redirecting grep output to `/dev/null`](#zc1273)
 - [ZC1274: Use Zsh `${var:t}` instead of `basename`](#zc1274)
 - [ZC1275: Use Zsh `${var:h}` instead of `dirname`](#zc1275)
 - [ZC1276: Use Zsh `{start..end}` instead of `seq`](#zc1276) · auto-fix
@@ -869,7 +869,7 @@ Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. 
 - [ZC1853: Warn on `setopt MARK_DIRS` — glob-matched directories gain a silent trailing `/`](#zc1853)
 - [ZC1854: Error on `yum-config-manager --add-repo http://…` / `zypper addrepo http://…` — plaintext repo allows MITM](#zc1854)
 - [ZC1855: Avoid `$GROUPS` — Bash-only array; Zsh exposes supplementary groups as `$groups`](#zc1855)
-- [ZC1856: Warn on `unset arr\[N\]` — Zsh does not delete the array element, the array keeps its length](#zc1856)
+- [ZC1856: Warn on `unset arr\[N\]` — Zsh blanks the element instead of removing it, the array keeps its length](#zc1856)
 - [ZC1857: Error on `cloud-init clean` — wipes boot state, next reboot re-provisions the host](#zc1857)
 - [ZC1858: Error on `ssh -c 3des-cbc\|arcfour\|blowfish-cbc` — weak cipher forced on the tunnel](#zc1858)
 - [ZC1859: Warn on `unsetopt MULTIOS` — `cmd >a >b` silently keeps only the last redirection](#zc1859)
@@ -1026,7 +1026,7 @@ Auto-fix availability is marked per-entry below as **Auto-fix:** `yes` or `no`. 
 **Severity:** `style`  
 **Auto-fix:** `yes`
 
-In Zsh, accessing array elements with `$my_array[1]` doesn't work as expected. It tries to access an element from an array named `my_array[1]`. The correct way to access an array element is to use `${my_array[1]}`.
+In native Zsh, `$my_array[1]` accesses array element 1 and is valid. The braced form `${my_array[1]}` is preferred: it is unambiguous, reads clearly inside double quotes, and behaves the same under `KSH_ARRAYS`.
 
 Disable by adding `ZC1001` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -1060,7 +1060,7 @@ Disable by adding `ZC1003` to `disabled_katas` in `.zshellcheckrc`.
 ### ZC1004 — Use `return` instead of `exit` in functions
 
 **Severity:** `warning`  
-**Auto-fix:** `yes`
+**Auto-fix:** `no`
 
 Using `exit` in a function terminates the entire shell, which is often unintended in interactive sessions or sourced scripts. Use `return` to exit the function.
 
@@ -1621,12 +1621,12 @@ Disable by adding `ZC1050` to `disabled_katas` in `.zshellcheckrc`.
 ---
 
 <a id="zc1051"></a>
-### ZC1051 — Quote variables in `rm` to avoid globbing
+### ZC1051 — Guard variables in `rm` against empty values
 
 **Severity:** `warning`  
 **Auto-fix:** `yes`
 
-`rm $VAR` is dangerous if `$VAR` contains spaces or glob characters. Quote the variable (`rm "$VAR"`) to ensure safe deletion.
+An unquoted expansion in `rm` is dangerous when its value is empty or unset: `rm $file` becomes bare `rm`, and `rm -rf $dir/` becomes `rm -rf /`. Quoting alone does not fix the trailing-slash case — guard with `${dir:?}` or `[[ -n $dir ]]`. In default Zsh an unquoted `$var` does not word-split or glob (those are Bash / `emulate sh` behaviors), but unquoted command substitution `$(...)` does split.
 
 Disable by adding `ZC1051` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -1840,9 +1840,9 @@ Disable by adding `ZC1068` to `disabled_katas` in `.zshellcheckrc`.
 ### ZC1069 — Avoid `local` outside of functions
 
 **Severity:** `info`  
-**Auto-fix:** `yes`
+**Auto-fix:** `no`
 
-The `local` builtin can only be used inside functions. Using it in the global scope causes an error.
+Retained for compatibility. In Zsh `local` is equivalent to `typeset` and is valid at any scope (top level, sourced files, even under `emulate sh`); the function-only restriction is Bash/POSIX-only, so this rule no longer warns.
 
 Disable by adding `ZC1069` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -1909,12 +1909,12 @@ Disable by adding `ZC1074` to `disabled_katas` in `.zshellcheckrc`.
 ---
 
 <a id="zc1075"></a>
-### ZC1075 — Quote variable expansions to prevent globbing
+### ZC1075 — Quote variable expansions to prevent empty-word elision
 
 **Severity:** `warning`  
 **Auto-fix:** `no`
 
-Unquoted variable expansions in Zsh are subject to globbing (filename generation). If the variable contains characters like `*` or `?`, it might match files unexpectedly. Use quotes `"$var"` to prevent this.
+An unquoted expansion whose value is empty or unset is elided entirely, so the word vanishes from the command (`rm $file` becomes bare `rm` when `$file` is empty). Quote scalars as `"$var"` and arrays as `"${arr[@]}"`. In default Zsh, unlike Bash, an unquoted `$var` does not word-split or glob unless `SH_WORD_SPLIT` or `GLOB_SUBST` is set, for example under `emulate sh`.
 
 Disable by adding `ZC1075` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -1950,7 +1950,7 @@ Disable by adding `ZC1077` to `disabled_katas` in `.zshellcheckrc`.
 **Severity:** `warning`  
 **Auto-fix:** `yes`
 
-Using unquoted `$@` or `$*` splits arguments by IFS (usually space). Use `"$@"` to preserve the original argument grouping, or `"$*"` to join them into a single string.
+Unlike Bash, Zsh does not word-split `$@`/`$*` (SH_WORD_SPLIT is off by default), so element grouping is preserved. The real difference is that unquoted `$@`/`$*` drops empty elements: with `set -- a '' c`, `$@` yields `a c` while `"$@"` yields `a '' c`. Use `"$@"` to keep empty positional parameters, or `"$*"` to join all elements into a single string.
 
 Disable by adding `ZC1078` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -1960,9 +1960,9 @@ Disable by adding `ZC1078` to `disabled_katas` in `.zshellcheckrc`.
 ### ZC1079 — Quote RHS of `==` in `[[ ... ]]` to prevent pattern matching
 
 **Severity:** `warning`  
-**Auto-fix:** `yes`
+**Auto-fix:** `no`
 
-In `[[ ... ]]`, unquoted variable expansions on the right-hand side of `==` or `!=` are treated as patterns (globbing). If you intend to compare strings literally, quote the variable.
+Retained for compatibility. In default Zsh a variable on the right-hand side of `==`/`!=` inside `[[ ... ]]` is matched literally; pattern metacharacters in its value are active only with `${~var}` or `GLOB_SUBST` (off by default, unlike Bash), so quoting the RHS is a no-op and this rule no longer warns.
 
 Disable by adding `ZC1079` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -2005,12 +2005,12 @@ Disable by adding `ZC1082` to `disabled_katas` in `.zshellcheckrc`.
 ---
 
 <a id="zc1083"></a>
-### ZC1083 — Brace expansion limits cannot be variables
+### ZC1083 — Quoted brace range does not expand
 
 **Severity:** `error`  
 **Auto-fix:** `no`
 
-Brace expansion `{x..y}` happens before variable expansion. `{1..$n}` will not work. Use `seq` or `for ((...))`.
+In Zsh a brace range with a parameter bound — `{1..$n}` — expands, unlike Bash, which keeps it literal unless the bounds are literal integers. Quoting the range suppresses brace expansion, so `"{1..$n}"` stays the literal string `{1..$n}`. Drop the quotes if you intended the range to expand.
 
 Disable by adding `ZC1083` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -2032,9 +2032,9 @@ Disable by adding `ZC1084` to `disabled_katas` in `.zshellcheckrc`.
 ### ZC1085 — Quote variable expansions in `for` loops
 
 **Severity:** `warning`  
-**Auto-fix:** `yes`
+**Auto-fix:** `no`
 
-Unquoted variable expansions in `for` loops are split by IFS (usually spaces). This often leads to iterating over words instead of lines or array elements. Quote the expansion to preserve structure.
+Retained for compatibility. In native Zsh an unquoted variable expansion in a `for` word list does not word-split (`SH_WORD_SPLIT` is off by default), and quoting an array collapses it into one word — `for x in $arr` is the correct element-iteration idiom, so this rule no longer warns.
 
 Disable by adding `ZC1085` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -2094,7 +2094,7 @@ Disable by adding `ZC1089` to `disabled_katas` in `.zshellcheckrc`.
 **Severity:** `warning`  
 **Auto-fix:** `no`
 
-Quoting the pattern on the right side of `=~` forces literal string matching in Zsh/Bash. Regex metacharacters inside quotes will be matched literally. Remove quotes to enable regex matching, or use `==` for literal string comparison.
+Retained for compatibility. Unlike Bash, Zsh takes the right side of `=~` as a regular expression regardless of quoting, so `[[ $x =~ "^[0-9]+$" ]]` still matches as a regex. Quoting is in fact idiomatic — it protects regex metacharacters from globbing and word splitting — so this rule no longer warns.
 
 Disable by adding `ZC1090` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -2142,7 +2142,7 @@ Disable by adding `ZC1093` to `disabled_katas` in `.zshellcheckrc`.
 **Severity:** `style`  
 **Auto-fix:** `no`
 
-For simple string substitutions on variables, use Zsh parameter expansion `${var//pattern/replacement}` instead of piping through `sed`. It avoids spawning an external process.
+For simple string substitutions on a single variable, use Zsh parameter expansion `${var//pattern/replacement}` instead of feeding `sed` from `echo $var` or a `<<< $var` here-string. It avoids spawning an external process. A `sed` reading a multi-line pipe stream is not flagged — there is no variable for the expansion to operate on.
 
 Disable by adding `ZC1094` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -2257,12 +2257,12 @@ Disable by adding `ZC1103` to `disabled_katas` in `.zshellcheckrc`.
 ---
 
 <a id="zc1104"></a>
-### ZC1104 — Suggest `path` array instead of `export PATH` string manipulation
+### ZC1104 — Superseded by ZC1188 — retired duplicate
 
 **Severity:** `style`  
 **Auto-fix:** `no`
 
-Zsh automatically maps the `$PATH` environment variable to the `$path` array. Modifying `$path` is cleaner and less error-prone than manipulating the colon-separated `$PATH` string.
+Retired duplicate of ZC1188, which gives the same `export PATH` advice with a direction-aware message. Stubbed to a no-op so legacy `disabled_katas` lists keep parsing; the detection lives in ZC1188.
 
 Disable by adding `ZC1104` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -2545,12 +2545,12 @@ Disable by adding `ZC1127` to `disabled_katas` in `.zshellcheckrc`.
 ---
 
 <a id="zc1128"></a>
-### ZC1128 — Use `> file` instead of `touch file` for creation
+### ZC1128 — Prefer a redirection over `touch` for a brand-new empty file
 
 **Severity:** `style`  
-**Auto-fix:** `yes`
+**Auto-fix:** `no`
 
-If the goal is to create an empty file, `> file` does it without spawning `touch`. Use `touch` only when you need to update timestamps.
+Creating a file with `touch file` spawns an external process. For a file that does not yet exist, `: >| file` creates it in the shell. Keep `touch` when the file may already exist: `touch` preserves contents, whereas a `>` redirection truncates an existing file.
 
 Disable by adding `ZC1128` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -3210,7 +3210,7 @@ Disable by adding `ZC1185` to `disabled_katas` in `.zshellcheckrc`.
 **Severity:** `info`  
 **Auto-fix:** `no`
 
-Bare `unset name` is ambiguous — it unsets variables first, then functions. Use `unset -v` for variables or `unset -f` for functions to be explicit.
+Retained for compatibility. In Zsh bare `unset name` unsets a parameter only; reaching a function needs `unset -f`. There is no variable-then-function fall-through (that is Bash), so bare `unset` is not ambiguous and this rule no longer warns.
 
 Disable by adding `ZC1186` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -4252,9 +4252,9 @@ Disable by adding `ZC1272` to `disabled_katas` in `.zshellcheckrc`.
 ### ZC1273 — Use `grep -q` instead of redirecting grep output to `/dev/null`
 
 **Severity:** `style`  
-**Auto-fix:** `yes`
+**Auto-fix:** `no`
 
-`grep -q` suppresses output and exits on first match, which is faster and more idiomatic than piping or redirecting to `/dev/null`.
+`grep -q` suppresses output and exits on the first match, which is faster than reading the whole input and discarding it. Rewrite by hand: the two forms are not interchangeable. `-q` exits early, so under `setopt pipefail` a producer earlier in the pipeline is killed by SIGPIPE and the pipeline status becomes 141 rather than 0. `-q` also leaves stderr alone, so it does not replace `&>` or `2>&1`.
 
 Disable by adding `ZC1273` to `disabled_katas` in `.zshellcheckrc`.
 
@@ -11245,12 +11245,12 @@ Disable by adding `ZC1855` to `disabled_katas` in `.zshellcheckrc`.
 ---
 
 <a id="zc1856"></a>
-### ZC1856 — Warn on `unset arr[N]` — Zsh does not delete the array element, the array keeps its length
+### ZC1856 — Warn on `unset arr[N]` — Zsh blanks the element instead of removing it, the array keeps its length
 
 **Severity:** `warning`  
 **Auto-fix:** `no`
 
-In Bash, `unset arr[N]` removes the N-th element of the array (leaving a sparse hole). In Zsh the same invocation passes the literal string `arr[N]` to the `unset` builtin, which looks for a parameter with that name — finds nothing — and returns success. The array is left untouched, `${#arr[@]}` does not budge, and every downstream `for x in "${arr[@]}"` keeps iterating the element the script thought it had removed. Use Zsh's native assignment form `arr[N]=()` to delete an index, or `arr=("${(@)arr:#pattern}")` to filter by value.
+In Bash, `unset arr[N]` removes the N-th element of the array (leaving a sparse hole). In Zsh the quoted form `unset 'arr[N]'` blanks element N — it becomes the empty string — but the array keeps its length, so `${#arr}` does not budge and every downstream `for x in "${arr[@]}"` still iterates the slot the script thought it had removed. The unquoted form `unset arr[N]` is worse: `arr[N]` is glob-expanded first and errors with `no matches found`. Use Zsh's native assignment form `arr[N]=()` to delete an index, or `arr=("${(@)arr:#pattern}")` to filter by value. This applies only to integer subscripts on a normal array; `unset 'assoc[key]'` correctly removes an associative-array key.
 
 Disable by adding `ZC1856` to `disabled_katas` in `.zshellcheckrc`.
 

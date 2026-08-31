@@ -183,36 +183,20 @@ func checkZC1103(node ast.Node) []Violation {
 func init() {
 	RegisterKata(ast.SimpleCommandNode, Kata{
 		ID:    "ZC1104",
-		Title: "Suggest `path` array instead of `export PATH` string manipulation",
-		Description: "Zsh automatically maps the `$PATH` environment variable to the `$path` array. " +
-			"Modifying `$path` is cleaner and less error-prone than manipulating the colon-separated `$PATH` string.",
+		Title: "Superseded by ZC1188 — retired duplicate",
+		Description: "Retired duplicate of ZC1188, which gives the same `export PATH` " +
+			"advice with a direction-aware message. Stubbed to a no-op so legacy " +
+			"`disabled_katas` lists keep parsing; the detection lives in ZC1188.",
 		Severity: SeverityStyle,
 		Check:    checkZC1104,
 	})
 }
 
-func checkZC1104(node ast.Node) []Violation {
-	cmd, ok := node.(*ast.SimpleCommand)
-	if !ok {
-		return nil
-	}
-
-	// Check for `export PATH=...`
-	if cmd.Name != nil && cmd.Name.String() == "export" {
-		for _, arg := range cmd.Arguments {
-			argStr := arg.String()
-			if strings.HasPrefix(argStr, "PATH=") {
-				return []Violation{{
-					KataID:  "ZC1104",
-					Message: "Use the `path` array instead of manually manipulating the `$PATH` string.",
-					Line:    cmd.Token.Line,
-					Column:  cmd.Token.Column,
-					Level:   SeverityStyle,
-				}}
-			}
-		}
-	}
-
+// ZC1104 fired on the same `export PATH=…` as the canonical ZC1188 with
+// overlapping advice — a 100% duplicate. Stubbed to a no-op so legacy
+// `disabled_katas` lists keep parsing; the detection now lives in ZC1188,
+// whose message adapts to a prepend or an append.
+func checkZC1104(ast.Node) []Violation {
 	return nil
 }
 
@@ -234,10 +218,13 @@ func checkZC1105(node ast.Node) []Violation {
 		return nil
 	}
 
-	// Check if the expression contains a nested arithmetic expansion
-	// A simplified check: if the string representation contains another $(( or ((
+	// Flag a genuinely nested arithmetic expansion: a `$(( ... ))` inside the
+	// `(( ... ))` command. Match only on `$((`; plain grouping parens are not
+	// an expansion, and a `(( ... ))` block cannot appear as a sub-expression
+	// inside another (it is a command, not an expression), so a bare `((`
+	// match would only ever catch the printer's grouping output.
 	exprString := arithCmd.Expression.String()
-	if strings.Contains(exprString, "$((") || strings.Contains(exprString, "((") {
+	if strings.Contains(exprString, "$((") {
 		return []Violation{{
 			KataID:  "ZC1105",
 			Message: "Avoid nested arithmetic expansions. Use intermediate variables for clarity.",
@@ -291,15 +278,10 @@ func checkZC1106(node ast.Node) []Violation {
 }
 
 func init() {
-	RegisterKata(ast.DoubleBracketExpressionNode, Kata{
-		ID:          "ZC1107",
-		Title:       "Use (( ... )) for arithmetic conditions",
-		Description: "Use `(( ... ))` for arithmetic comparisons instead of `[[ ... -gt ... ]]`. The double parenthesis syntax supports standard math operators (`>`, `<`, `==`, `!=`) and is optimized.",
-		Severity:    SeverityStyle,
-		Check:       checkZC1107DoubleBracket,
-		Fix:         fixZC1091,
-	})
-
+	// ZC1107 covers the `[ … -eq … ]` / `test` builtin form. The
+	// `[[ … -gt … ]]` double-bracket arithmetic comparison is owned by
+	// ZC1091 (same suggestion, same fix); registering it here too made
+	// every `[[ … -gt … ]]` emit two style findings under different IDs.
 	RegisterKata(ast.SimpleCommandNode, Kata{
 		ID:          "ZC1107",
 		Title:       "Use (( ... )) for arithmetic conditions",
@@ -309,37 +291,11 @@ func init() {
 	})
 }
 
-func checkZC1107DoubleBracket(node ast.Node) []Violation {
-	dbe := node.(*ast.DoubleBracketExpression)
-	var violations []Violation
-
-	// Helper to check infix expressions recursively
-	check := func(n ast.Node) bool {
-		if infix, ok := n.(*ast.InfixExpression); ok {
-			switch infix.Operator {
-			case "-eq", "-ne", "-lt", "-le", "-gt", "-ge":
-				violations = append(violations, Violation{
-					KataID:  "ZC1107",
-					Message: "Prefer `(( ... ))` for arithmetic comparisons (e.g., `(( a > b ))`) over `[[ ... ]]` with flags like `" + infix.Operator + "`.",
-					Line:    infix.TokenLiteralNode().Line,
-					Column:  infix.TokenLiteralNode().Column,
-					Level:   SeverityStyle,
-				})
-			}
-		}
-		return true
-	}
-
-	// Walk the elements of the double bracket expression
-	for _, el := range dbe.Elements {
-		ast.Walk(el, check)
-	}
-
-	return violations
-}
-
 func checkZC1107SimpleCommand(node ast.Node) []Violation {
-	cmd := node.(*ast.SimpleCommand)
+	cmd, ok := node.(*ast.SimpleCommand)
+	if !ok || cmd.Name == nil {
+		return nil
+	}
 
 	// Check if command is "[" or "test"
 	cmdName := cmd.Name.TokenLiteral()
@@ -347,22 +303,13 @@ func checkZC1107SimpleCommand(node ast.Node) []Violation {
 		return nil
 	}
 
-	var violations []Violation
-	for _, arg := range cmd.Arguments {
-		argText := arg.TokenLiteral()
-		switch argText {
-		case "-eq", "-ne", "-lt", "-le", "-gt", "-ge":
-			violations = append(violations, Violation{
-				KataID:  "ZC1107",
-				Message: "Prefer `(( ... ))` for arithmetic comparisons (e.g., `(( a > b ))`) over `[ ... ]` with flags like `" + argText + "`.",
-				Line:    arg.TokenLiteralNode().Line,
-				Column:  arg.TokenLiteralNode().Column,
-				Level:   SeverityStyle,
-			})
-		}
-	}
-
-	return violations
+	// The `[ … -eq … ]` arithmetic-comparison advice is owned by ZC1003
+	// (same `(( … ))` suggestion, and it carries the auto-fix). ZC1107's
+	// SimpleCommand branch emitted a second, identical finding on the same
+	// line, so defer entirely. ZC1091 owns the `[[ … ]]` form; with both
+	// branches deferred ZC1107 no longer double-flags any comparison.
+	_ = cmd
+	return nil
 }
 
 func init() {
@@ -559,16 +506,19 @@ func checkZC1111(node ast.Node) []Violation {
 	for _, arg := range cmd.Arguments {
 		val := arg.String()
 		if len(val) > 1 && val[0] == '-' {
+			// `--max-procs`, `--replace` and `--max-lines` take a value,
+			// which xargs accepts inline as `--max-procs=4`.
+			name, _ := LongFlagName(val)
 			switch {
-			case val == "-0", val == "--null":
+			case name == "-0", name == "--null":
 				return nil
-			case val == "-P", val == "--max-procs":
+			case name == "-P", name == "--max-procs":
 				return nil
-			case val == "-I", val == "--replace":
+			case name == "-I", name == "--replace":
 				return nil
-			case val == "-L", val == "--max-lines":
+			case name == "-L", name == "--max-lines":
 				return nil
-			case val == "-p", val == "--interactive":
+			case name == "-p", name == "--interactive":
 				return nil
 			}
 		}
@@ -1461,39 +1411,14 @@ func checkZC1127(node ast.Node) []Violation {
 func init() {
 	RegisterKata(ast.SimpleCommandNode, Kata{
 		ID:    "ZC1128",
-		Title: "Use `> file` instead of `touch file` for creation",
-		Description: "If the goal is to create an empty file, `> file` does it without " +
-			"spawning `touch`. Use `touch` only when you need to update timestamps.",
+		Title: "Prefer a redirection over `touch` for a brand-new empty file",
+		Description: "Creating a file with `touch file` spawns an external process. " +
+			"For a file that does not yet exist, `: >| file` creates it in the shell. " +
+			"Keep `touch` when the file may already exist: `touch` preserves contents, " +
+			"whereas a `>` redirection truncates an existing file.",
 		Severity: SeverityStyle,
 		Check:    checkZC1128,
-		Fix:      fixZC1128,
 	})
-}
-
-// fixZC1128 rewrites `touch file` into `> file`. Detector already
-// guards against flagged forms (timestamp updates) and multi-arg
-// invocations, so the fix covers only the single-file case.
-func fixZC1128(node ast.Node, v Violation, source []byte) []FixEdit {
-	cmd, ok := node.(*ast.SimpleCommand)
-	if !ok {
-		return nil
-	}
-	if len(cmd.Arguments) != 1 {
-		return nil
-	}
-	nameOff := LineColToByteOffset(source, v.Line, v.Column)
-	if nameOff < 0 || nameOff+len("touch") > len(source) {
-		return nil
-	}
-	if string(source[nameOff:nameOff+len("touch")]) != "touch" {
-		return nil
-	}
-	return []FixEdit{{
-		Line:    v.Line,
-		Column:  v.Column,
-		Length:  len("touch"),
-		Replace: ">",
-	}}
 }
 
 func checkZC1128(node ast.Node) []Violation {
@@ -1522,8 +1447,8 @@ func checkZC1128(node ast.Node) []Violation {
 
 	return []Violation{{
 		KataID: "ZC1128",
-		Message: "Use `> file` instead of `touch file` to create an empty file. " +
-			"This avoids spawning an external process.",
+		Message: "Prefer `: >| file` over `touch file` for a brand-new empty file. " +
+			"Keep `touch` when the file may already exist, because `>` truncates it.",
 		Line:   cmd.Token.Line,
 		Column: cmd.Token.Column,
 		Level:  SeverityStyle,
@@ -2675,6 +2600,23 @@ func init() {
 	})
 }
 
+// zc1149GoesToStderr reports whether a print/echo command already directs
+// its output to stderr — via the `print -u2` / `print -u 2` file-descriptor
+// flag or a `>&2` / `2>` redirection word. Such a command needs no fix.
+func zc1149GoesToStderr(cmd *ast.SimpleCommand) bool {
+	for i, arg := range cmd.Arguments {
+		s := arg.String()
+		if s == "-u2" || strings.Contains(s, ">&2") || strings.HasPrefix(s, "2>") {
+			return true
+		}
+		// The split `-u 2` form: a `-u` flag followed by the fd `2`.
+		if s == "-u" && i+1 < len(cmd.Arguments) && cmd.Arguments[i+1].String() == "2" {
+			return true
+		}
+	}
+	return false
+}
+
 func checkZC1149(node ast.Node) []Violation {
 	cmd, ok := node.(*ast.SimpleCommand)
 	if !ok {
@@ -2690,28 +2632,42 @@ func checkZC1149(node ast.Node) []Violation {
 		return nil
 	}
 
+	// Already routed to stderr: `print -u2 …`, `print -u 2 …`, or any
+	// `>&2` / `2>` redirection. The error message is on the right stream,
+	// so the kata has nothing to recommend.
+	if zc1149GoesToStderr(cmd) {
+		return nil
+	}
+
 	for _, arg := range cmd.Arguments {
-		val := arg.String()
-		// Check for error-like messages
-		if len(val) > 5 {
-			clean := val
-			if len(clean) > 2 && (clean[0] == '\'' || clean[0] == '"') {
-				clean = clean[1 : len(clean)-1]
-			}
-			if len(clean) >= 5 && (clean[:5] == "Error" || clean[:5] == "error" || clean[:5] == "ERROR") {
-				return []Violation{{
-					KataID: "ZC1149",
-					Message: "Error messages should go to stderr. Use `print -u2` or append `>&2` " +
-						"to separate error output from normal stdout.",
-					Line:   cmd.Token.Line,
-					Column: cmd.Token.Column,
-					Level:  SeverityInfo,
-				}}
-			}
+		if zc1149IsErrorPrefixed(arg.String()) {
+			return []Violation{{
+				KataID: "ZC1149",
+				Message: "Error messages should go to stderr. Use `print -u2` or append `>&2` " +
+					"to separate error output from normal stdout.",
+				Line:   cmd.Token.Line,
+				Column: cmd.Token.Column,
+				Level:  SeverityInfo,
+			}}
 		}
 	}
 
 	return nil
+}
+
+// zc1149IsErrorPrefixed reports whether a print/echo argument is a string
+// that begins with `Error`/`error`/`ERROR` (with surrounding quotes
+// stripped) — the diagnostic-message shape the kata routes to stderr.
+func zc1149IsErrorPrefixed(val string) bool {
+	if len(val) <= 5 {
+		return false
+	}
+	clean := val
+	if len(clean) > 2 && (clean[0] == '\'' || clean[0] == '"') {
+		clean = clean[1 : len(clean)-1]
+	}
+	return len(clean) >= 5 &&
+		(clean[:5] == "Error" || clean[:5] == "error" || clean[:5] == "ERROR")
 }
 
 func init() {
@@ -4496,7 +4452,8 @@ func checkZC1184(node ast.Node) []Violation {
 
 	for _, arg := range cmd.Arguments {
 		val := arg.String()
-		if val == "-u" || val == "--unified" {
+		// diff documents `--unified[=NUM]`.
+		if name, _ := LongFlagName(val); name == "-u" || name == "--unified" {
 			return []Violation{{
 				KataID: "ZC1184",
 				Message: "Consider `git diff` instead of `diff -u` when working in a repository. " +
@@ -4564,42 +4521,21 @@ func init() {
 		ID:       "ZC1186",
 		Title:    "Use `unset -v` or `unset -f` for explicit unsetting",
 		Severity: SeverityInfo,
-		Description: "Bare `unset name` is ambiguous — it unsets variables first, then functions. " +
-			"Use `unset -v` for variables or `unset -f` for functions to be explicit.",
+		Description: "Retained for compatibility. In Zsh bare `unset name` unsets a " +
+			"parameter only; reaching a function needs `unset -f`. There is no " +
+			"variable-then-function fall-through (that is Bash), so bare `unset` is " +
+			"not ambiguous and this rule no longer warns.",
 		Check: checkZC1186,
 	})
 }
 
-func checkZC1186(node ast.Node) []Violation {
-	cmd, ok := node.(*ast.SimpleCommand)
-	if !ok {
-		return nil
-	}
-
-	ident, ok := cmd.Name.(*ast.Identifier)
-	if !ok || ident.Value != "unset" {
-		return nil
-	}
-
-	for _, arg := range cmd.Arguments {
-		val := arg.String()
-		if val == "-v" || val == "-f" {
-			return nil
-		}
-	}
-
-	if len(cmd.Arguments) == 0 {
-		return nil
-	}
-
-	return []Violation{{
-		KataID: "ZC1186",
-		Message: "Use `unset -v name` for variables or `unset -f name` for functions. " +
-			"Bare `unset` is ambiguous about what is being removed.",
-		Line:   cmd.Token.Line,
-		Column: cmd.Token.Column,
-		Level:  SeverityInfo,
-	}}
+// checkZC1186 is intentionally inert. In Zsh bare `unset name` unsets a
+// parameter only; reaching a function requires `unset -f` (or `unfunction`).
+// There is no variable-then-function fall-through — that behaviour is Bash —
+// so bare `unset` is unambiguous and the original "ambiguous" warning was a
+// Bash-ism. The kata ID is retained per the no-removal policy.
+func checkZC1186(_ ast.Node) []Violation {
+	return nil
 }
 
 func init() {
@@ -4660,17 +4596,35 @@ func checkZC1188(node ast.Node) []Violation {
 		val := arg.String()
 		if len(val) > 5 && val[:5] == "PATH=" {
 			return []Violation{{
-				KataID: "ZC1188",
-				Message: "Use `path+=(dir)` instead of `export PATH=$PATH:dir`. " +
-					"Zsh ties the `path` array to `$PATH` for cleaner manipulation.",
-				Line:   cmd.Token.Line,
-				Column: cmd.Token.Column,
-				Level:  SeverityStyle,
+				KataID:  "ZC1188",
+				Message: zc1188Advice(val[5:]),
+				Line:    cmd.Token.Line,
+				Column:  cmd.Token.Column,
+				Level:   SeverityStyle,
 			}}
 		}
 	}
 
 	return nil
+}
+
+// zc1188Advice tailors the message to the direction of the PATH edit.
+// A prepend (`dir:$PATH`) must use `path=(dir $path)`; advising the
+// append form `path+=(dir)` there would move the directory to the end
+// and reverse command precedence. An append (`$PATH:dir`) uses
+// `path+=(dir)`. Anything else gets both forms.
+func zc1188Advice(rhs string) string {
+	const tie = " Zsh ties the `path` array to `$PATH`."
+	switch {
+	case strings.HasSuffix(rhs, ":$PATH"), strings.HasSuffix(rhs, ":${PATH}"):
+		return "Prepend with `path=(dir $path)` instead of `export PATH=dir:$PATH`. " +
+			"`path+=(dir)` would append the directory and reverse command precedence."
+	case strings.HasPrefix(rhs, "$PATH:"), strings.HasPrefix(rhs, "${PATH}:"):
+		return "Append with `path+=(dir)` instead of `export PATH=$PATH:dir`." + tie
+	default:
+		return "Manipulate the tied `path` array instead of `export PATH=…`: " +
+			"`path=(dir $path)` to prepend, `path+=(dir)` to append."
+	}
 }
 
 func init() {

@@ -77,8 +77,16 @@ func TestIsDevNullAndStringValue(t *testing.T) {
 	if got := getStringValueZC1053(concat); got != "/dev/null" {
 		t.Errorf("getStringValueZC1053(concat): got %q want /dev/null", got)
 	}
-	if got := getStringValueZC1053(&ast.Identifier{Value: "x"}); got != "" {
-		t.Errorf("getStringValueZC1053(non-string): got %q want \"\"", got)
+	// A bare word is a valid redirection target (`> /dev/null` parses the
+	// path as an identifier), so the string form reads it.
+	if got := getStringValueZC1053(&ast.Identifier{Value: "/dev/null"}); got != "/dev/null" {
+		t.Errorf("getStringValueZC1053(identifier): got %q want /dev/null", got)
+	}
+	if !isDevNull(&ast.Identifier{Value: "/dev/null"}) {
+		t.Errorf("isDevNull(unquoted /dev/null): expected true")
+	}
+	if got := getStringValueZC1053(&ast.IntegerLiteral{Value: 2}); got != "" {
+		t.Errorf("getStringValueZC1053(unsupported node): got %q want \"\"", got)
 	}
 }
 
@@ -177,31 +185,39 @@ func TestZC1045ConcatHasSub(t *testing.T) {
 	}
 }
 
-// TestZC1071SelfReferences exercises every node-type branch of the
-// self-reference detector used by ZC1071.
-func TestZC1071SelfReferences(t *testing.T) {
+// TestZC1071IsWholeArrayRef exercises every node-type branch of the
+// whole-array reference detector used by ZC1071. Only an unmodified
+// whole-array reference counts: the bare `$foo` / `${foo}` identifier or
+// the `${foo[@]}` subscript. A bare indexless ArrayAccess is treated as
+// potentially modified (the parser collapses `${foo##*/}` to the same
+// shape) and must not match.
+func TestZC1071IsWholeArrayRef(t *testing.T) {
 	id := &ast.Identifier{Value: "foo"}
-	if !zc1071SelfReferences(&ast.ArrayAccess{Left: id}, "foo") {
-		t.Errorf("ArrayAccess(foo) referencing foo: expected true")
+	atIdx := &ast.Identifier{Value: "@"}
+	if !zc1071IsWholeArrayRef(&ast.ArrayAccess{Left: id, Index: atIdx}, "foo") {
+		t.Errorf("ArrayAccess(foo[@]) referencing foo: expected true")
 	}
-	if zc1071SelfReferences(&ast.ArrayAccess{Left: id}, "bar") {
-		t.Errorf("ArrayAccess(foo) referencing bar: expected false")
+	if zc1071IsWholeArrayRef(&ast.ArrayAccess{Left: id, Index: atIdx}, "bar") {
+		t.Errorf("ArrayAccess(foo[@]) referencing bar: expected false")
 	}
-	if !zc1071SelfReferences(&ast.Identifier{Value: "$foo"}, "foo") {
+	if zc1071IsWholeArrayRef(&ast.ArrayAccess{Left: id}, "foo") {
+		t.Errorf("ArrayAccess(foo) without [@] (possibly modified): expected false")
+	}
+	if !zc1071IsWholeArrayRef(&ast.Identifier{Value: "$foo"}, "foo") {
 		t.Errorf("Identifier($foo) referencing foo: expected true")
 	}
-	if !zc1071SelfReferences(&ast.Identifier{Value: "${foo}"}, "foo") {
+	if !zc1071IsWholeArrayRef(&ast.Identifier{Value: "${foo}"}, "foo") {
 		t.Errorf("Identifier(${foo}) referencing foo: expected true")
 	}
 	prefix := &ast.PrefixExpression{Operator: "$", Right: id}
-	if !zc1071SelfReferences(prefix, "foo") {
+	if !zc1071IsWholeArrayRef(prefix, "foo") {
 		t.Errorf("PrefixExpression($foo) referencing foo: expected true")
 	}
 	wrong := &ast.PrefixExpression{Operator: "!", Right: id}
-	if zc1071SelfReferences(wrong, "foo") {
+	if zc1071IsWholeArrayRef(wrong, "foo") {
 		t.Errorf("PrefixExpression(!) referencing foo: expected false")
 	}
-	if zc1071SelfReferences(&ast.IntegerLiteral{Value: 1}, "foo") {
+	if zc1071IsWholeArrayRef(&ast.IntegerLiteral{Value: 1}, "foo") {
 		t.Errorf("IntegerLiteral: expected false")
 	}
 }

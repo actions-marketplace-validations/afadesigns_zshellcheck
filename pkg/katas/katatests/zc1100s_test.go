@@ -195,16 +195,11 @@ func TestZC1104(t *testing.T) {
 		expected []katas.Violation
 	}{
 		{
-			name:  "export PATH assignment",
-			input: `export PATH=$PATH:/bin`,
-			expected: []katas.Violation{
-				{
-					KataID:  "ZC1104",
-					Message: "Use the `path` array instead of manually manipulating the `$PATH` string.",
-					Line:    1,
-					Column:  1,
-				},
-			},
+			// ZC1104 is retired — a duplicate of ZC1188, which now owns the
+			// `export PATH=…` detection. ZC1104 fires on nothing.
+			name:     "export PATH assignment is handled by ZC1188",
+			input:    `export PATH=$PATH:/bin`,
+			expected: []katas.Violation{},
 		},
 		{
 			name:     "valid path array assignment",
@@ -247,6 +242,23 @@ func TestZC1105(t *testing.T) {
 		{
 			name:     "double parenthesis arithmetic command",
 			input:    `(( 1 + 1 ))`,
+			expected: []katas.Violation{},
+		},
+		{
+			// Grouping parens are precedence control, not a nested
+			// expansion. None of these may flag.
+			name:     "leading grouped operand",
+			input:    `(( (i + 1) % n ))`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "two grouped operands",
+			input:    `(( (a + b) * (c + d) ))`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "grouped operand in assignment",
+			input:    `(( result = (base + offset) * scale ))`,
 			expected: []katas.Violation{},
 		},
 	}
@@ -331,19 +343,23 @@ func TestZC1107(t *testing.T) {
 			want: 0,
 		},
 		{
-			name: "Invalid -eq",
+			// `[ … -eq … ]` arithmetic is owned by ZC1003 (same `(( … ))`
+			// suggestion + fix); ZC1107 no longer double-flags it.
+			name: "single-bracket arithmetic is ZC1003, not ZC1107",
 			src:  "if [ $a -eq $b ]; then echo yes; fi",
-			want: 1,
+			want: 0,
 		},
 		{
-			name: "Invalid -gt in [[ ]]",
+			// `[[ … -gt … ]]` arithmetic is owned by ZC1091; ZC1107 must
+			// not double-flag the double-bracket form either.
+			name: "double-bracket arithmetic is ZC1091, not ZC1107",
 			src:  "if [[ $a -gt 5 ]]; then echo yes; fi",
-			want: 1,
+			want: 0,
 		},
 		{
-			name: "Invalid -le",
+			name: "single-bracket -le is ZC1003, not ZC1107",
 			src:  "while [ $count -le 10 ]; do ((count++)); done",
-			want: 1,
+			want: 0,
 		},
 	}
 
@@ -538,6 +554,23 @@ func TestZC1111(t *testing.T) {
 		{
 			name:     "valid xargs with null separator",
 			input:    `xargs -0 rm`,
+			expected: []katas.Violation{},
+		},
+		{
+			// xargs accepts the value inline for every option that takes
+			// one, and that spelling must count the same as the spaced one.
+			name:     "valid xargs with parallel inline value",
+			input:    `xargs --max-procs=4 cmd`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "valid xargs with replace inline value",
+			input:    `xargs --replace=@ mv @ /dest`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "valid xargs with max-lines inline value",
+			input:    `xargs --max-lines=1 cmd`,
 			expected: []katas.Violation{},
 		},
 		{
@@ -1237,7 +1270,7 @@ func TestZC1128(t *testing.T) {
 			expected: []katas.Violation{
 				{
 					KataID:  "ZC1128",
-					Message: "Use `> file` instead of `touch file` to create an empty file. This avoids spawning an external process.",
+					Message: "Prefer `: >| file` over `touch file` for a brand-new empty file. Keep `touch` when the file may already exist, because `>` truncates it.",
 					Line:    1,
 					Column:  1,
 				},
@@ -3229,6 +3262,18 @@ func TestZC1184(t *testing.T) {
 			expected: []katas.Violation{},
 		},
 		{
+			name:  "invalid diff --unified=3",
+			input: `diff --unified=3 old.txt new.txt`,
+			expected: []katas.Violation{
+				{
+					KataID:  "ZC1184",
+					Message: "Consider `git diff` instead of `diff -u` when working in a repository. `git diff` provides better context and integration.",
+					Line:    1,
+					Column:  1,
+				},
+			},
+		},
+		{
 			name:  "invalid diff -u",
 			input: `diff -u old.txt new.txt`,
 			expected: []katas.Violation{
@@ -3305,16 +3350,11 @@ func TestZC1186(t *testing.T) {
 			expected: []katas.Violation{},
 		},
 		{
-			name:  "invalid bare unset",
-			input: `unset myvar`,
-			expected: []katas.Violation{
-				{
-					KataID:  "ZC1186",
-					Message: "Use `unset -v name` for variables or `unset -f name` for functions. Bare `unset` is ambiguous about what is being removed.",
-					Line:    1,
-					Column:  1,
-				},
-			},
+			// Bare `unset name` unsets a parameter only in Zsh; it is
+			// unambiguous, so the rule must stay quiet.
+			name:     "bare unset is valid in zsh",
+			input:    `unset myvar`,
+			expected: []katas.Violation{},
 		},
 	}
 
@@ -3371,7 +3411,7 @@ func TestZC1188(t *testing.T) {
 			expected: []katas.Violation{
 				{
 					KataID:  "ZC1188",
-					Message: "Use `path+=(dir)` instead of `export PATH=$PATH:dir`. Zsh ties the `path` array to `$PATH` for cleaner manipulation.",
+					Message: "Append with `path+=(dir)` instead of `export PATH=$PATH:dir`. Zsh ties the `path` array to `$PATH`.",
 					Line:    1,
 					Column:  1,
 				},

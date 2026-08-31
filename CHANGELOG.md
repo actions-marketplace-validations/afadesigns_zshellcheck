@@ -7,6 +7,236 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-08-26
+
+### Fixed
+- Auto-fix no longer rewrites a file into code Zsh cannot parse. A violation's edits now apply as one unit, so a rewrite that only partly succeeds is dropped whole rather than left half-applied. Applying every fix across the pinned corpora previously broke eleven files; it now breaks none.
+- ZC1273 reports a `grep` that could use `-q` without rewriting the redirect. The rewrite orphaned the redirection operator, and `-q` is not equivalent in a pipeline under `pipefail` or when stderr is also redirected.
+- ZC1293 keeps a trailing redirection outside the brackets it introduces, instead of wrapping it inside them.
+- ZC1003 and ZC1010 find the bracket that really closes a test, counting nested glob character classes and glob qualifiers instead of stopping at the first `]`.
+- ZC1053 no longer reports a `grep` whose output is already discarded. The kata now recognises every redirection spelling, including the attached `>/dev/null`, and reads an option cluster left to right so a flag that takes a value cannot be mistaken for `-q`.
+- ZC1044 reports a `cd` where a failed one can actually do harm: function bodies declared with `function name { … }`, `case` clause bodies and `select` bodies are now walked, and a `cd` that ends a function is exempt.
+- A `( … )` in command position parses as a subshell rather than an array literal, so katas that walk commands see the body.
+- A redirection with no target is a parser error, as it is in Zsh. The auto-fix safety gate measures corruption with this parser, so a rewrite that dropped a redirect target while leaving its operator behind used to pass unnoticed.
+- Sixteen katas read an option written as `--flag=value`, not only as `--flag value`. Among them: ZC1231 stops reporting `git clone --depth=1` and no longer produces `--depth 1 --shallow-since=<date>`, a pair Git refuses; ZC1523 catches `tar --directory=/`; ZC1514 catches `usermod --password=<hash>`; and ZC1402's inline-form branch, which compared six characters against a seven-character literal and could never be taken, now works.
+
+## [1.7.2] - 2026-08-24
+
+### Fixed
+- A SARIF `artifactLocation.uri` now carries a valid URI instead of a raw filesystem path: an absolute or slash-rooted path becomes a `file://` URI with percent-encoded segments, a relative path stays a relative URI reference, and a first segment containing a colon gains a `./` prefix so it cannot be misread as a URI scheme.
+
+### Changed
+- Release builds use Go 1.27.0.
+
+## [1.7.1] - 2026-06-26
+
+### Fixed
+- Code inside a `&&` / `||` logical-chain compound body (`cmd && { ... }`, `cmd && if ...; fi`, `cmd && for ...; done`, `cmd && case ... esac`) is now linted. It was previously invisible to every kata, so an unquoted `rm -rf $x` or similar inside such a block went unreported; upgrading may surface new findings.
+- A command-position assignment after `&&` / `||` or in a pipeline (`[[ cond ]] && var=value`) parses as an assignment, so a variable named for a builtin (`test=`, `seq=`, `timeout=`) is no longer mis-flagged as that command.
+- A quoted segment glued to an assignment value (`x='b'cd`) is absorbed into the assignment instead of being orphaned into a spurious `cd`-failure warning.
+- ZC1075 no longer flags flag-led expansions (`${(q)x}`), bare expansions of known arrays, width-padded expansions, `typeset` arrays, or a `$var` glued to a command-name prefix.
+- ZC1043, ZC1049, ZC1097, and ZC1098 no longer report false positives (local/global tracking, positional names, alias definitions, and the `eval "$@"` dispatch idiom).
+- ZC1044 no longer flags a `cd=` variable assignment as a `cd` command.
+- ZC1188 gives direction-aware `PATH` advice; ZC1104 is retired as a duplicate of ZC1188.
+- Auto-fixes no longer emit broken code; a corpus round-trip gate and per-kata golden tests guard every fixable kata.
+- The `-no-color` TTY note, the SARIF parse-error FAQ, exit code 2, and the integration-sweep scope are documented accurately.
+
+## [1.7.0] - 2026-06-16
+
+### Added
+- `-rule-severity <ZC####:level,...>` re-grades specific katas to a chosen severity (`error`, `warning`, `info`, `style`), independent of the global `-severity` floor.
+- `-add-noka` appends a `# noka: ZC####` directive to every line that carries a finding and writes the files, silencing an existing codebase in bulk for review.
+- `-detect-stale-noka` reports `# noka` directives that suppress no actual finding and exits non-zero when any are found, so stale suppressions can be pruned.
+
+## [1.6.0] - 2026-06-16
+
+### Added
+- `-baseline-write <path>` records a snapshot of the current findings; `-baseline <path>` then suppresses those findings and reports only ones new since the snapshot, exiting non-zero only on new findings. This lets a large existing codebase adopt ZShellCheck and fail CI on regressions without fixing every pre-existing finding first. A baseline entry is keyed by kata, file, and the trimmed source line, so unrelated line moves do not resurrect a suppressed finding.
+
+## [1.5.1] - 2026-06-16
+
+### Added
+- The SARIF report now embeds a `rules` array in the tool driver. Each kata that produced a finding contributes a rule descriptor with its title, full description, default severity level, and a help URL, and every result references its rule by index. GitHub code scanning renders these so a finding shows what the rule means and where to read more.
+
+## [1.5.0] - 2026-06-16
+
+### Added
+- `-unsafe-fixes` applies fixes that may change runtime behavior. Without it, `-fix` now applies only safe (value-preserving) fixes.
+- The text report counts the two fix tiers separately: `[*] N fixable with the -fix option.` followed by `M more fixable with -fix -unsafe-fixes.`
+
+### Changed
+- `-fix` is safe-by-default. Each auto-fix is classified safe or unsafe: a safe fix cannot change runtime behavior or drop a comment (for example `` `cmd` `` to `$(cmd)`, `$arr[i]` to `${arr[i]}`); an unsafe fix may (a command or flag swap such as `which` to `whence` or `netstat` to `ss`, a scope change, a glob qualifier). `-fix` previously applied every fix, including behavior-changing ones; it now withholds those unless `-unsafe-fixes` is passed.
+
+## [1.4.0] - 2026-06-16
+
+### Added
+- The text report tags every finding whose kata ships an auto-fix with a trailing `[*]`, and ends with a `[*] N fixable with the -fix option.` summary. You can now see how much `-fix` resolves before running it.
+- `-statistics` prints a per-kata count of findings, sorted by frequency and tagged with the `[*]` fixable marker, instead of individual reports. Use it to triage which checks dominate a large codebase.
+
+## [1.3.7] - 2026-06-16
+
+### Fixed
+- `--format=json` and `--format=sarif` over more than one file now emit a single valid document. Each file previously produced its own array or object, concatenated into output that no JSON or SARIF consumer could parse.
+- SARIF results now carry a physical location (file URI plus 1-based line and column) and a per-severity level, so GitHub code scanning can ingest the report. They previously contained only a rule id and message.
+- A clean scan in a machine-readable format now emits an empty document (`[]` for JSON, an empty run for SARIF) instead of no output.
+
+### Changed
+- Each JSON finding now includes a `File` field. Existing single-file consumers are unaffected.
+
+## [1.3.6] - 2026-06-16
+
+### Changed
+- ZShellCheck now builds from the Go standard library alone — zero third-party dependencies. The `github.com/adrg/xdg` and `gopkg.in/yaml.v3` modules (and the transitive `golang.org/x/sys`) are replaced by a small internal XDG config-path resolver and a config parser for the existing flat `.zshellcheckrc` format. Existing config files continue to work unchanged.
+
+## [1.3.5] - 2026-06-16
+
+### Fixed
+- Auto-fix never writes source that fails to parse. When a pass would introduce a parser error — for example two fixes colliding on the same token — only the individually safe edits are kept, and a still-conflicting set is skipped entirely.
+- The ZC1001 `${...}` rewrite emits a single replacement spanning `$name[subscript]`. The previous pair of `{` / `}` insertions straddled ZC1073's `$` deletion inside `(( … ))` and produced the broken `{name[subscript]}`.
+- The ZC1040 `(N)` nullglob fix no longer stacks qualifiers (`pattern(N)(N)(N)…`) when run more than once.
+
+## [1.3.4] - 2026-06-16
+
+### Fixed
+- Zsh's `{ try-list } always { always-list }` construct parses as a single block. The `always` clause was treated as a separate `always { … }` command, which left a stray closing brace as its own statement.
+
+## [1.3.3] - 2026-06-16
+
+### Fixed
+- An orphan compound closer (`fi`, `done`, `esac`) at the top level of a script is now reported as a parse error instead of being silently accepted.
+- `&>file` is lexed as the combined stdout-and-stderr redirect. It was split into a background `&` and an orphaned `>`, which desynced the surrounding parse (for example a leading `if { … } &>/dev/null; then`).
+- A command followed only by redirects parses as one statement. A redirect chain such as `cmd >/dev/null 2>&1`, `cmd >> log`, `cmd >& fd`, or `cmd <& 3` no longer orphans its target word into a bogus second statement.
+- An expression-led pipeline (`$cmd && echo hello`) gathers the right-hand command's arguments instead of stranding them as a separate statement.
+- A leading brace-group condition (`if { cmd }; then …; fi`) is no longer mistaken for the brace-form body opener.
+
+## [1.3.2] - 2026-06-16
+
+### Changed
+- Each `echo` now gets a single recommendation: ZC1037 (`print -r --`, the idiomatic Zsh replacement, which carries the auto-fix). ZC1030 (`printf`) and ZC1092 (`prefer print`) defer to it instead of stacking up to three divergent suggestions on one line.
+- A single-bracket arithmetic comparison (`[ $a -eq $b ]`) now gets a single recommendation: ZC1003 (`(( … ))`, with the fix). ZC1107 defers, and ZC1010 defers when an arithmetic operator is present so it no longer suggests `[[ … ]]` over the better `(( … ))`.
+
+### Fixed
+- ZC1075 no longer flags word-splitting parameter-flag expansions (`${(f)x}`, `${(s:,:)x}`, `${(@)arr}`, `${(kv)map}`). They expand to multiple words; quoting them defeats the idiom. The parser now preserves the `(flags)` group on the expansion node.
+- A concatenated assignment right-hand side with a glued identifier path tail (`x=${a}/init`) is no longer split into two statements.
+
+## [1.3.1] - 2026-06-16
+
+### Fixed
+- ZC1075 no longer flags a concatenated path-style assignment right-hand side (`x=${a}/${b}`, `arr[k]=$H/$z`). The right-hand side split at the glued `/`, orphaning the tail into a bogus command that mis-flagged the trailing expansion.
+- ZC1285 no longer flags `sort <file>` with the `${(o)array}` suggestion. Sorting a file's lines cannot be replaced by the in-shell array flag; the idiom only applies to the pipe form.
+
+## [1.3.0] - 2026-06-16
+
+### Added
+- `-list-rules` prints every kata (ID, severity, title) and exits.
+- `-explain ZC####` prints one kata's full description and exits. Case-insensitive.
+
+### Fixed
+- ZC1075 no longer flags `${VAR:-word}`, `${VAR:=word}`, or `${VAR:+word}` default-value expansions. They always supply a value and never elide, so the canonical `: ${VAR:=default}` idiom is no longer warned. The message no longer mislabels a scalar expansion as an array element.
+- ZC1107 no longer double-flags `[[ ... -gt ... ]]` arithmetic comparisons. That double-bracket form is owned by ZC1091; ZC1107 keeps the `[ ... ]` and `test` builtin form. Every arithmetic comparison is now reported once.
+- Documentation drift: the auto-fix badge count, the INSTALL roadmap anchors, the SECURITY supported-versions table, the info-tier severity example, and drift-prone inline kata counts.
+
+## [1.2.6] - 2026-06-15
+
+### Fixed
+- Parser: the Zsh short-form `for x ( list ) { body }` brace loop consumes its own closing `}`. Nested inside another brace block (`if (( c )) { for p ( … ) { … } } else { … }`), it no longer closes the enclosing block early and orphans the trailing `else`.
+
+## [1.2.5] - 2026-06-15
+
+### Fixed
+- Parser: nested compound commands now consume their own terminator, so an inner `fi`, `done`, or `esac` is never mistaken for the enclosing compound's closer. Affects `if`, `for`, `while`, `until`, `repeat`, and `select` when nested inside another loop or conditional.
+- Parser: a `( … )` subshell on the right of a pipeline (`cmd | ( … )`) no longer swallows the following statement when its body ends in a compound command.
+- Parser: `return` takes its optional value only on the same logical line, so a bare `return` no longer absorbs the next statement as its value.
+
+## [1.2.4] - 2026-06-14
+
+### Removed
+- Two auto-fixes that silently changed runtime behaviour. The detections remain; only the destructive rewrite is gone.
+  - ZC1128 no longer rewrites `touch file` to `> file`. The redirection truncates an existing file, so the rewrite could destroy data inside a create-if-missing guard.
+  - ZC1004 no longer rewrites `exit` to `return`. Inside a `die`-style helper the swap inverts fail-fast, letting the script continue instead of terminating.
+
+### Fixed
+- Parser: four statement-level constructs that parsed without error but built a wrong AST, so the orphaned fragment swallowed the following command and left it unlinted.
+  - A redirection trailing a brace-group statement (`{ … } 2>/dev/null`).
+  - A process substitution as the first argument (`diff <(a) <(b)`, `source <(cmd)`). This also fixed a ZC1604 false positive on substitution arguments.
+  - A bare `X=` at end of line swallowing the next line as an assignment right-hand side.
+  - The Zsh-only `repeat <count> …` and `foreach <name> (<list>) … end` loops, which previously had no grammar.
+- Katas: fourteen false positives narrowed, each confirmed against Zsh 5.9 and each keeping its true positive — ZC1001, ZC1012, ZC1016, ZC1017, ZC1037, ZC1040, ZC1054, ZC1071, ZC1078, ZC1083, ZC1094, ZC1098, ZC1604, ZC1715, ZC1818, ZC1856, ZC1909.
+- ZC1502 message corrected: the flagged variable is not always the search pattern.
+
+## [1.2.3] - 2026-06-14
+
+### Fixed
+- Linter: `name() { … }` function bodies are now analysed.
+  The AST walker descended into the `function name { … }` form but not the `name()` form, so every body-level kata silently skipped the most common function syntax.
+  Scripts that define functions with `name()` now receive the same checks as the rest of the file.
+  This surfaced two pre-existing false positives, both fixed in the same change:
+  - ZC1045 no longer flags `local x=$(( … ))`. Arithmetic expansion runs no command, so it masks no exit code; only `local x=$(cmd)` does.
+  - ZC1043 no longer flags Zsh special parameters that are global by design (`BUFFER`, `LBUFFER`, `CURSOR`, `region_highlight`, `PROMPT`, `PS1`, and the other ZLE editor-state and prompt parameters). Assigning them inside a function without `local` is the intended idiom; `local` would break a ZLE widget or discard the prompt.
+- Parser: an `if`/`while` condition whose final operand is a subshell on its own line (`if [[ a ]] && ( [[ b ]] )⏎then`) no longer orphans the following `then`/`do`.
+  The bare `)` was mistaken for the condition's own terminator.
+  Confirmed valid by `zsh -n`, parsing with zero errors across the corpus sweep, and producing no false-positive drift.
+
+## [1.2.2] - 2026-06-04
+
+### Fixed
+- Parser: two command-word gaps that left Powerlevel10k's `p10k.zsh` unparseable, each confirmed valid by `zsh -n`, parsing with zero errors across the corpus sweep, and producing no false-positive drift.
+  - A glob bracket class glued to a path word in a `for … in` list (`for plugin in $dir/[^[:space:]]##(/N)`) was mistaken for an array subscript; the subscript parser then swallowed the loop's `do … done`. A `[` after a word that carries a `/` now opens a glob, not a subscript; `$var[1]` still indexes.
+  - The `$=name` forced-word-split expansion (the bare-`$` form of `${=name}`) failed to parse. The split flag is a single `=`; the expansion-flag dispatch matched `==` instead. The sibling `$^name` and `$~name` forms were unaffected.
+
+## [1.2.1] - 2026-06-04
+
+### Fixed
+- Parser and lexer: four more real-world Zsh constructs that previously failed to parse, each confirmed valid by `zsh -n`, parsing with zero errors across the corpus sweep, and producing no false-positive drift.
+  - A command substitution whose body is a subshell with a leading space (`$( (cmd) )`) is no longer mistaken for arithmetic; the inner subshell's `)` is distinguished from the substitution's close.
+  - A `case … esac` or a `{ } always { }` try block inside a command substitution (`$( case … esac )`) now parses; the body drain follows the `case` past its own `esac` and honours the `always` continuation.
+  - Consecutive subshells separated only by a newline (`(a)⏎(b)`) no longer drop the second subshell; the linter had silently skipped scanning it.
+  - A double-quoted string whose `${…}` body contains an escaped `\${` no longer swallows its own closing quote. The lexer counted the lone `{` as opening a nested expansion; it now decrements on `}` only, matching Zsh, which closes the expansion at the next unescaped `}`. This unblocks Powerlevel10k's `p10k.zsh`.
+
+## [1.2.0] - 2026-06-04
+
+### Fixed
+- Parser: a batch of real-world Zsh constructs that previously failed to parse, found by sweeping oh-my-zsh, the Pure prompt, and the zsh distribution's own function library read-only. Each is confirmed valid by `zsh -n`, parses with zero errors across the 69-corpus sweep, and produces no false-positive drift.
+  - A POSIX bracket class in a `for`-in word (`for x in a[[:alpha:]]`) was mis-parsed as an array subscript and consumed the rest of the input; this blocked Powerlevel10k.
+  - A bare `?` before an operator in arithmetic (`$(( ? == 0 ))`), used by the Pure prompt.
+  - A reserved word used as an arithmetic variable (`(( done = 1 ))`), used by the zsh distribution.
+  - `let name++` post-increment with no assignment.
+  - A function defined with a parameter-spliced name (`function $w-by-keymap { … }`).
+  - `#` as an arithmetic operator inside `$(( … ))`; `elif (( … ))` after a `case` in the preceding then-body; a process substitution inside a subshell body; a single quote inside `"$(...)"` inside `${…}`; `(( … ))` grouping inside `[[ … ]]`; the `function` keyword with a braceless body; the short `for`-loop form; `let` compound-assignment and quoted forms; and leading-zero integer literals.
+
+### Changed
+- The quote-variable kata family is reworked to Zsh semantics. In default Zsh, `SH_WORD_SPLIT` and `GLOB_SUBST` are off, so an unquoted `$var` neither word-splits nor globs; the prior rationale was Bash-only. ZC1075 now warns on empty/unset word elision (the genuine Zsh risk) and fires only on bare expansions; ZC1051 is reworded to the `rm` empty-value danger; ZC1079 is retired because a `[[ == ]]` right-hand variable is already literal in Zsh.
+- Rules that imported a Bash-only restriction are retired, keeping their IDs inert: ZC1069 (`local` outside a function), ZC1085 (quoting a `for`-loop array, which collapses it in Zsh), ZC1090 (quoted `=~`), and ZC1186 (bare `unset`).
+- False-positive corrections: ZC1105 (grouped arithmetic), ZC1098 (`eval "$(tool init zsh)"` shell init), ZC1049 (global and suffix aliases), ZC1043 (`REPLY` and return-value globals), and ZC1001 (message accuracy).
+
+## [1.1.0] - 2026-06-03
+
+### Added
+- 50 upstream corpora pinned into the parser sweep matrix (19 → 69), each zero-parse-error and panic-free at the pinned commit. Selected by stargazer count from the most-used Zsh integrations not already covered. The baseline stays empty.
+  - Plugins: atuin, navi, autojump, mcfly, forgit, git-open, git-flow-completion, zsh-nvm, zsh-z, zsh-histdb, git-extra-commands, alias-tips, zsh-abbr, zsh-autoenv, wd, zsh-autopair, zaw, zsh-notify, zsh-better-npm-completion, zsh-defer, zsh-fzf-history-search, zsh-bd, emoji-cli, zsh-interactive-cd, zsh-completion-generator, zsh-shift-select, zsh-hist, zsh-edit, zsh-256color, history-search-multi-word, zsh-dircolors-solarized, zsh-eza, zsh-vimode-visual, zcolors, zhooks, zsh-colored-man-pages, zsh-navigation-tools.
+  - Prompts: typewritten, agkozak-zsh-prompt, bullet-train, geometry, purer, minimal.
+  - Plugin managers: zgen, zsh-snap, zpm, zcomet.
+  - Tooling: F-Sy-H, fzf-zsh-plugin, zsh-async.
+- False-positive ratchet: `scripts/violation-corpus-sweep.sh` snapshots per-file, per-kata findings on the pinned corpora into `.github/violation-baseline.txt` and fails CI when a finding appears, disappears, or changes count. A finding on code already reviewed as clean is a candidate false positive; a vanished finding is a candidate coverage regression. The same snapshot-diff pattern backs shellcheck, Ruff, clippy, and semgrep. Runs in the corpus sweep CI job beside the parser-error gate.
+- Metamorphic format-invariance test (`pkg/katas/katatests/metamorphic_test.go`): leading and trailing blank lines, whole-line comments, and neutral variable renames must not change which katas fire. Catches position- and spelling-sensitive detections.
+
+## [1.0.18] - 2026-06-01
+
+### Added
+- Seven upstream corpora pinned into the parser sweep matrix (12 → 19), each zero-parse-error and panic-free: gitstatus, prezto-contrib, prezto, spaceship-prompt, zsh-autosuggestions, zsh-completions, zsh-help.
+- Parser-corpus sweep now detects a linter crash per file (exit ≥ 2 or a Go stack trace) and fails the gate; a crash is never tolerated, even under `--update-baseline`.
+
+### Changed
+- `reflect.Ptr` replaced with the canonical `reflect.Pointer`. The `govet` inline check added in golangci-lint v2.12.2 flags the deprecated alias; the value is identical. (#1336)
+- GitHub Actions pins refreshed across the `github-actions` group: harden-runner 2.19.0 → 2.19.4, dependency-review-action 4.9.0 → 5.0.0, osv-scanner-action 2.3.5 → 2.3.8, cosign-installer 4.1.1 → 4.1.2, golangci-lint-action 9.2.0 → 9.2.1, goreleaser-action 7.2.1 → 7.2.2, setup-qemu 4.0.0 → 4.1.0, crate-ci/typos 1.45.2 → 1.47.0, and four others. Every pin is a 40-character SHA with the version in a trailing comment. (#1335, #1339)
+
+### Fixed
+- Parser: the ZC1069 and ZC1053 kata walkers guarded only a plain nil node, not a typed-nil interface, and crashed the linter with SIGSEGV on valid Zsh such as `if [[ x == y ]] && ( ! [[ -n $A ]] ); then : ; fi` — a form present in prezto, zsh-syntax-highlighting, and canonical Zsh. Both walkers now carry the reflect-based typed-nil guard that `ast.Walk` and the ZC1044 walker already use. (#1340)
+- Lexer: arithmetic compound-assignment operators `/=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, and `**=` now fuse inside `((…))` / `$((…))`. Only `+=`, `-=`, `*=`, and `%=` fused before, so `(( n /= 2 ))` parsed as a division with no right-hand side and errored. Embedded `${…}` operands in arithmetic words also scan correctly. Behaviour outside arithmetic is unchanged. (#1341)
+- Parser: four Zsh word forms surfaced by the corpus sweep now parse cleanly — the arithmetic for-loop comma operator (`for ((i=0, j=1; i<j; i++, j--))`), concatenated `case` subjects (`case $a/$b in`, `case ${a}:${b} in`), the character-code prefix operator in arithmetic (`(( #name ))`, `(( ##c ))`), and function names that glue in a positional parameter (`function _$0_fmt()`).
+- Parser-corpus sweep: the glob list splits without pathname expansion, so a pattern such as `_*` reaches `find` literally instead of matching files in the repository root.
+- ZC1043 no longer flags an inline env-var prefix (`DEBUG=true echo foo`) as a missing-`local` global — the assignment is scoped to the following command, not a persistent global. A standalone `DEBUG=true` (or one ended by `;`) is still flagged. Reported by @eeweegh. (#1332)
+
 ## [1.0.17] - 2026-04-30
 
 ### Added
@@ -119,7 +349,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `cmd  # noka: ZC1234`      — silences one kata on this line.
     - `cmd  # noka: ZC1234, ZC1075` — multiple, comma- or space-separated.
   Standalone `# noka` directives still apply to the next non-blank code line; placed at file tail with no code after them, they apply file-wide.
-  Rationale: shorter (18 vs 30 chars), distinctive ("no kata"), aligns with the python ecosystem's `# noqa` convention.
+  Rationale: shorter, distinctive ("no kata"), and consistent with the inline-comment suppression conventions other linters use.
   Refactored cleanly while the project is still early — no fork-side migration to coordinate.
 
 ### Added

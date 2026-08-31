@@ -1724,6 +1724,22 @@ func init() {
 	})
 }
 
+// zc1231ShallowFlags are the `git clone` options that truncate the history
+// the clone downloads. Each takes a value, and git accepts both spellings:
+// `--depth 1` and `--depth=1`.
+var zc1231ShallowFlags = map[string]bool{
+	"--depth":           true,
+	"--shallow-since":   true,
+	"--shallow-exclude": true,
+}
+
+// zc1231LimitsHistory reports whether a `git clone` argument already limits
+// how much history the clone downloads.
+func zc1231LimitsHistory(word string) bool {
+	name, _ := LongFlagName(word)
+	return zc1231ShallowFlags[name]
+}
+
 // fixZC1231 inserts ` --depth 1` after the `clone` subcommand in
 // `git clone …`. Mirrors ZC1234's subcommand-level insertion for
 // docker run --rm.
@@ -1738,6 +1754,14 @@ func fixZC1231(node ast.Node, _ Violation, source []byte) []FixEdit {
 	cloneArg := cmd.Arguments[0]
 	if cloneArg.String() != "clone" {
 		return nil
+	}
+	// Adding a second history-limiting option is never right: `--depth 1`
+	// alongside `--shallow-since` makes git refuse the clone outright, and
+	// alongside another `--depth` the last value silently wins.
+	for _, arg := range cmd.Arguments[1:] {
+		if zc1231LimitsHistory(arg.String()) {
+			return nil
+		}
 	}
 	tok := cloneArg.TokenLiteralNode()
 	off := LineColToByteOffset(source, tok.Line, tok.Column)
@@ -1798,8 +1822,7 @@ func checkZC1231(node ast.Node) []Violation {
 
 	hasDepth := false
 	for _, arg := range cmd.Arguments[1:] {
-		val := arg.String()
-		if val == "--depth" || val == "--shallow-since" || val == "--single-branch" {
+		if zc1231LimitsHistory(arg.String()) {
 			hasDepth = true
 		}
 	}
@@ -4356,72 +4379,13 @@ func init() {
 		ID:       "ZC1273",
 		Title:    "Use `grep -q` instead of redirecting grep output to `/dev/null`",
 		Severity: SeverityStyle,
-		Description: "`grep -q` suppresses output and exits on first match, which is faster and more " +
-			"idiomatic than piping or redirecting to `/dev/null`.",
+		Description: "`grep -q` suppresses output and exits on the first match, which is faster " +
+			"than reading the whole input and discarding it. Rewrite by hand: the two forms are " +
+			"not interchangeable. `-q` exits early, so under `setopt pipefail` a producer earlier " +
+			"in the pipeline is killed by SIGPIPE and the pipeline status becomes 141 rather than " +
+			"0. `-q` also leaves stderr alone, so it does not replace `&>` or `2>&1`.",
 		Check: checkZC1273,
-		Fix:   fixZC1273,
 	})
-}
-
-// fixZC1273 inserts ` -q` after `grep` and strips the trailing
-// `/dev/null` argument (including its leading whitespace). Two edits;
-// the detector already gates on the absence of `-q`, so the rewrite
-// is idempotent on a re-run.
-func fixZC1273(node ast.Node, v Violation, source []byte) []FixEdit {
-	cmd, ok := node.(*ast.SimpleCommand)
-	if !ok {
-		return nil
-	}
-	ident, ok := cmd.Name.(*ast.Identifier)
-	if !ok || ident.Value != "grep" {
-		return nil
-	}
-	var devNull ast.Expression
-	for _, arg := range cmd.Arguments {
-		if arg.String() == "/dev/null" {
-			devNull = arg
-			break
-		}
-	}
-	if devNull == nil {
-		return nil
-	}
-	nameOff := LineColToByteOffset(source, v.Line, v.Column)
-	if nameOff < 0 || IdentLenAt(source, nameOff) != len("grep") {
-		return nil
-	}
-	insertAt := nameOff + len("grep")
-	insLine, insCol := offsetLineColZC1273(source, insertAt)
-	if insLine < 0 {
-		return nil
-	}
-	stripEdits := zc1238StripFlag(source, devNull, "/dev/null")
-	if stripEdits == nil {
-		return nil
-	}
-	return append([]FixEdit{{
-		Line:    insLine,
-		Column:  insCol,
-		Length:  0,
-		Replace: " -q",
-	}}, stripEdits...)
-}
-
-func offsetLineColZC1273(source []byte, offset int) (int, int) {
-	if offset < 0 || offset > len(source) {
-		return -1, -1
-	}
-	line := 1
-	col := 1
-	for i := 0; i < offset; i++ {
-		if source[i] == '\n' {
-			line++
-			col = 1
-			continue
-		}
-		col++
-	}
-	return line, col
 }
 
 func checkZC1273(node ast.Node) []Violation {
@@ -4429,39 +4393,73 @@ func checkZC1273(node ast.Node) []Violation {
 	if !ok {
 		return nil
 	}
-
 	ident, ok := cmd.Name.(*ast.Identifier)
 	if !ok || ident.Value != "grep" {
 		return nil
 	}
-
-	hasQuiet := false
-	for _, arg := range cmd.Arguments {
-		val := arg.String()
-		if val == "-q" || val == "--quiet" || val == "--silent" {
-			hasQuiet = true
-			break
-		}
-	}
-
-	if hasQuiet {
+	if zc1053HasQuietFlag(cmd.Arguments) || !zc1273RedirectsStdoutToDevNull(cmd.Arguments) {
 		return nil
 	}
+	return []Violation{{
+		KataID:  "ZC1273",
+		Message: "Use `grep -q` instead of redirecting to `/dev/null`. It exits on the first match instead of reading the whole input.",
+		Line:    cmd.Token.Line,
+		Column:  cmd.Token.Column,
+		Level:   SeverityStyle,
+	}}
+}
 
-	for _, arg := range cmd.Arguments {
-		val := arg.String()
-		if val == "/dev/null" {
-			return []Violation{{
-				KataID:  "ZC1273",
-				Message: "Use `grep -q` instead of redirecting to `/dev/null`. It is faster and more idiomatic.",
-				Line:    cmd.Token.Line,
-				Column:  cmd.Token.Column,
-				Level:   SeverityStyle,
-			}}
+// zc1273RedirectsStdoutToDevNull reports whether the arguments send grep's
+// stdout, and only its stdout, to /dev/null.
+//
+// The advice holds only for a plain stdout redirect. `&>` and `2>&1` also
+// discard stderr, which `grep -q` keeps printing, and `2>` never touched
+// stdout in the first place. A bare `/dev/null` with no operator before it
+// is a second search file, not a redirection: `grep pattern file /dev/null`
+// is the idiom that forces grep to prefix its output with file names.
+func zc1273RedirectsStdoutToDevNull(args []ast.Expression) bool {
+	if zc1273SuppressesStderr(args) {
+		return false
+	}
+	for i, arg := range args {
+		word, quoted := zc1053ArgWord(arg)
+		if quoted {
+			continue
+		}
+		op, target := zc1053SplitRedirect(word)
+		if op == "" {
+			continue
+		}
+		if target == "" && i+1 < len(args) {
+			target, _ = zc1053ArgWord(args[i+1])
+		}
+		if zc1053UnquoteWord(target) != "/dev/null" {
+			continue
+		}
+		if op == ">" || op == "1>" {
+			return true
 		}
 	}
+	return false
+}
 
-	return nil
+// zc1273SuppressesStderr reports whether the arguments also discard stderr,
+// through `&>`, `2>`, or a `2>&1` duplication. `grep -q` silences only
+// stdout, so it cannot stand in for any of these: grep would start printing
+// its errors again.
+func zc1273SuppressesStderr(args []ast.Expression) bool {
+	for _, arg := range args {
+		word, quoted := zc1053ArgWord(arg)
+		if quoted {
+			continue
+		}
+		op, _ := zc1053SplitRedirect(word)
+		switch op {
+		case "&>", "2>", "2>&", "&>>":
+			return true
+		}
+	}
+	return false
 }
 
 func init() {
@@ -4969,13 +4967,14 @@ func checkZC1285(node ast.Node) []Violation {
 	if cmd.Arguments[0].String() == "" || cmd.Arguments[0].String()[0] == '-' {
 		return nil
 	}
-	return []Violation{{
-		KataID:  "ZC1285",
-		Message: "Use Zsh `${(o)array}` for sorting instead of piping to `sort`. The `(o)` flag sorts in-shell.",
-		Line:    cmd.Token.Line,
-		Column:  cmd.Token.Column,
-		Level:   SeverityStyle,
-	}}
+	// `sort <arg>` with a single non-flag argument sorts the lines of a
+	// FILE named by that argument (`sort log.txt`, `sort "$f"`). The
+	// `${(o)array}` flag sorts an in-shell array, not a file, so it cannot
+	// replace this — flagging it gives wrong advice on the most common,
+	// valid use of `sort`. The idiom only replaces the pipe form
+	// (`print -l -- $array | sort`), which this per-command check cannot
+	// see; detecting it needs pipeline context. Do not flag the file form.
+	return nil
 }
 
 func init() {
@@ -5329,7 +5328,11 @@ func fixZC1293(node ast.Node, v Violation, source []byte) []FixEdit {
 	if string(source[cmdOff:cmdOff+len("test")]) != "test" {
 		return nil
 	}
-	lastArg := cmd.Arguments[len(cmd.Arguments)-1]
+	exprEnd := zc1293LastExprArg(cmd.Arguments)
+	if exprEnd < 0 {
+		return nil
+	}
+	lastArg := cmd.Arguments[exprEnd]
 	lastTok := lastArg.TokenLiteralNode()
 	lastOff := LineColToByteOffset(source, lastTok.Line, lastTok.Column)
 	if lastOff < 0 {
@@ -5348,6 +5351,30 @@ func fixZC1293(node ast.Node, v Violation, source []byte) []FixEdit {
 		{Line: v.Line, Column: v.Column, Length: len("test"), Replace: "[["},
 		{Line: endLine, Column: endCol, Length: 0, Replace: " ]]"},
 	}
+}
+
+// zc1293LastExprArg returns the index of the last argument belonging to the
+// test expression itself, stopping before any trailing redirection.
+//
+// The parser folds a redirection into the argument list rather than building
+// a redirection node, so `test -f f 2>/dev/null` arrives with the redirect
+// among the arguments. Closing the bracket after it would produce
+// `[[ -f f 2>/dev/null ]]`, which Zsh rejects; the redirect has to stay
+// outside, as `[[ -f f ]] 2>/dev/null`. Returns -1 when nothing but a
+// redirection follows the command name.
+func zc1293LastExprArg(args []ast.Expression) int {
+	end := len(args)
+	for i, arg := range args {
+		word, quoted := zc1053ArgWord(arg)
+		if quoted {
+			continue
+		}
+		if op, _ := zc1053SplitRedirect(word); op != "" {
+			end = i
+			break
+		}
+	}
+	return end - 1
 }
 
 func offsetLineColZC1293(source []byte, offset int) (int, int) {

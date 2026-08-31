@@ -104,6 +104,8 @@ const (
 	Fi       = "FI"
 	FOR      = "FOR"
 	WHILE    = "WHILE"
+	REPEAT   = "REPEAT"
+	FOREACH  = "FOREACH"
 	DO       = "DO"
 	DONE     = "DONE"
 	IN       = "IN"
@@ -152,23 +154,40 @@ var keywords = map[string]Type{
 	"fi":       Fi,
 	"for":      FOR,
 	"while":    WHILE,
-	"do":       DO,
-	"done":     DONE,
-	"in":       IN,
-	"case":     CASE,
-	"esac":     ESAC,
-	"elif":     ELIF,
-	"select":   SELECT,
-	"coproc":   COPROC,
-	"typeset":  TYPESET,
-	"declare":  DECLARE,
-	"-eq":      EQ_NUM,
-	"-ne":      NE_NUM,
-	"-lt":      LT_NUM,
-	"-le":      LE_NUM,
-	"-gt":      GT_NUM,
-	"-ge":      GE_NUM,
-	"/":        SLASH,
+	// `until` is a Zsh reserved word with the same grammar as `while`
+	// (condition + `do … done`), only the loop sense is inverted. It
+	// shares the WHILE token so the loop parser and katas treat it
+	// structurally as a while loop; the original `until` keyword is
+	// preserved in the token literal for any rule that distinguishes
+	// the two. Without this `until` lexed as a plain command and its
+	// `(( … ))` condition was misparsed as an argument, erroring on a
+	// grouped sub-expression (`until (( ( a ) != b )); do … done`).
+	"until": WHILE,
+	// `repeat <count>` and `foreach <name> (<list>)` are Zsh reserved
+	// loop words with no Bash equivalent. `repeat` takes a count then a
+	// `do … done` or `{ … }` body; `foreach` takes a name and a
+	// parenthesised list then a body closed by `end`. `end` is NOT made
+	// a global keyword (it is a valid identifier outside foreach) — the
+	// foreach parser recognises the literal `end` as its terminator.
+	"repeat":  REPEAT,
+	"foreach": FOREACH,
+	"do":      DO,
+	"done":    DONE,
+	"in":      IN,
+	"case":    CASE,
+	"esac":    ESAC,
+	"elif":    ELIF,
+	"select":  SELECT,
+	"coproc":  COPROC,
+	"typeset": TYPESET,
+	"declare": DECLARE,
+	"-eq":     EQ_NUM,
+	"-ne":     NE_NUM,
+	"-lt":     LT_NUM,
+	"-le":     LE_NUM,
+	"-gt":     GT_NUM,
+	"-ge":     GE_NUM,
+	"/":       SLASH,
 }
 
 func LookupIdent(ident string) Type {

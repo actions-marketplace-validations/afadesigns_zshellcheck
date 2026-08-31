@@ -24,7 +24,28 @@ var expressionTerminators = map[token.Type]struct{}{
 	token.TYPESET: {}, token.DECLARE: {},
 }
 
+// arithKeywordTokens are reserved-word tokens that, inside arithmetic, are
+// ordinary variable names rather than control-flow keywords or expression
+// terminators — `(( done = 1 ))`, `(( in + 1 ))`. Reserved words are
+// special only in command position.
+var arithKeywordTokens = map[token.Type]struct{}{
+	token.If: {}, token.THEN: {}, token.ELSE: {}, token.ELIF: {},
+	token.Fi: {}, token.FOR: {}, token.WHILE: {}, token.DO: {},
+	token.DONE: {}, token.IN: {}, token.CASE: {}, token.ESAC: {},
+	token.SELECT: {}, token.FUNCTION: {}, token.COPROC: {},
+}
+
 func (p *Parser) parseExpression(precedence int) ast.Expression {
+	// In arithmetic a reserved word in operand position is a variable
+	// name, not a control-flow keyword or a terminator. Parse it as an
+	// identifier and run the infix chain so `(( done = 1 ))` reads as an
+	// assignment to the variable `done`.
+	if p.inArithmetic {
+		if _, kw := arithKeywordTokens[p.curToken.Type]; kw {
+			tok := p.curToken
+			return p.parseInfixChain(&ast.Identifier{Token: tok, Value: tok.Literal}, precedence)
+		}
+	}
 	if _, hit := expressionTerminators[p.curToken.Type]; hit {
 		return nil
 	}
@@ -40,7 +61,13 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		p.noPrefixParseFnError(p.curToken.Type)
 		return nil
 	}
-	leftExp := prefix()
+	return p.parseInfixChain(prefix(), precedence)
+}
+
+// parseInfixChain folds infix operators onto leftExp until precedence or a
+// syntactic boundary stops it. Shared by the prefix-dispatch path and the
+// arithmetic-keyword-as-identifier path in parseExpression.
+func (p *Parser) parseInfixChain(leftExp ast.Expression, precedence int) ast.Expression {
 	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
 		if p.expressionInfixShouldBreak() {
 			break
@@ -91,7 +118,9 @@ func isDoubleBracketLiteralKeyword(t token.Type) bool {
 // tryArithSpecialParameter degrades a `?` token in arithmetic context
 // to the literal `$?` special parameter when peek is a closer
 // (`))`, `)`, `;`, `,`). Without this, parsePrefixExpression dragged
-// the closer into a bogus right-operand parse.
+// the closer into a bogus right-operand parse. The operator-followed
+// case (`(( ? == 0 ))`) goes through parseQuestionPrefix instead, so the
+// infix loop can run — the early-return here would skip it.
 func (p *Parser) tryArithSpecialParameter() (ast.Expression, bool) {
 	if !p.inArithmetic || !p.curTokenIs(token.QUESTION) {
 		return nil, false
@@ -102,6 +131,19 @@ func (p *Parser) tryArithSpecialParameter() (ast.Expression, bool) {
 		return &ast.Identifier{Token: tok, Value: tok.Literal}, true
 	}
 	return nil, false
+}
+
+// parseQuestionPrefix handles a `?` dispatched as a prefix. In arithmetic
+// a leading `?` is the `$?` special parameter (the ternary `?` is infix
+// and never reaches a prefix slot), so return it as an identifier and let
+// the infix loop continue — `(( ? == 0 ))` reads as `$? == 0`. Outside
+// arithmetic, fall back to the generic prefix-operator parse.
+func (p *Parser) parseQuestionPrefix() ast.Expression {
+	if p.inArithmetic {
+		tok := p.curToken
+		return &ast.Identifier{Token: tok, Value: tok.Literal}
+	}
+	return p.parsePrefixExpression()
 }
 
 // expressionInfixShouldBreak reports whether the infix chain in
@@ -129,17 +171,8 @@ func (p *Parser) expressionInfixShouldBreak() bool {
 // SLASH/LBRACKET arms guard glob-context shapes; AMPERSAND/CARET/COMMA
 // arms guard shell-control bytes that are only infix inside `((…))`.
 func (p *Parser) peekShouldBreakInfix() bool {
-	if p.peekTokenIs(token.LBRACKET) && p.peekToken.HasPrecedingSpace {
-		return true
-	}
-	// Inside `[[ … ]]`, a `[` after a closing `)` (glob-alt group)
-	// or `]` (prior bracket-class) is the next glob fragment, not
-	// an array subscript. Without this break the INDEX infix walks
-	// past the closing `]]` and the outer test fails to terminate.
-	if p.inDoubleBracket && p.peekTokenIs(token.LBRACKET) &&
-		(p.curTokenIs(token.RPAREN) || p.curTokenIs(token.RBRACKET) ||
-			p.curTokenIs(token.STRING)) {
-		return true
+	if p.peekTokenIs(token.LBRACKET) {
+		return p.peekLBracketBreaksInfix()
 	}
 	if p.peekTokenIs(token.SLASH) && !p.peekToken.HasPrecedingSpace {
 		return true
@@ -153,19 +186,64 @@ func (p *Parser) peekShouldBreakInfix() bool {
 	return false
 }
 
+// peekLBracketBreaksInfix reports whether a peeked `[` opens a glob
+// bracket class rather than an array-subscript infix. The caller has
+// confirmed peek == LBRACKET.
+func (p *Parser) peekLBracketBreaksInfix() bool {
+	// A spaced `[` is a separate word, not a subscript.
+	if p.peekToken.HasPrecedingSpace {
+		return true
+	}
+	// A `[` glued to a path-glob word — a `/` already in curToken's
+	// literal (a SLASH token, or an IDENT/VARIABLE like `$root/plugins/`)
+	// — opens a glob bracket class: `/` can never appear in an array
+	// name. Without this the INDEX infix treats the path as the array
+	// name and the subscript parser swallows the rest of the input
+	// (p10k `for plugin in $root/plugins/[^[:space:]]##(/N)` ate the
+	// loop's `; do … done`). `$path[1]` (no `/`) stays a real subscript.
+	if strings.Contains(p.curToken.Literal, "/") {
+		return true
+	}
+	// Inside `[[ … ]]`, a `[` after a closing `)` (glob-alt group), `]`
+	// (prior bracket-class), or a STRING is the next glob fragment, not
+	// a subscript. Without this the INDEX infix walks past `]]`.
+	return p.inDoubleBracket &&
+		(p.curTokenIs(token.RPAREN) || p.curTokenIs(token.RBRACKET) ||
+			p.curTokenIs(token.STRING))
+}
+
 func (p *Parser) parseIdentifier() ast.Expression {
 	tok := p.curToken
 	value := tok.Literal
 	// Inside arithmetic, Zsh concatenates an IDENT with a glued
-	// VARIABLE / INT to form a dynamic variable name:
-	// `(( X_$y == 2 ))` reads as the value of `X_<expanded y>`.
+	// VARIABLE / INT / DollarLbrace to form a dynamic variable name:
+	// `(( X_$y == 2 ))` reads as the value of `X_<expanded y>`, and
+	// `(( x >= PFX_${state}_SFX ))` uses a param-expansion mid-name.
 	// Absorb the glued tokens so the closing `))` lines up.
 	if p.inArithmetic {
-		for !p.peekToken.HasPrecedingSpace &&
-			(p.peekTokenIs(token.VARIABLE) || p.peekTokenIs(token.INT)) {
-			p.nextToken()
-			value += p.curToken.Literal
+		for !p.peekToken.HasPrecedingSpace {
+			switch {
+			case p.peekTokenIs(token.VARIABLE), p.peekTokenIs(token.INT):
+				p.nextToken()
+				value += p.curToken.Literal
+			case p.peekTokenIs(token.DollarLbrace):
+				// Absorb `${…}` expansion opaquely: skip past the
+				// matching `}` so the arithmetic closer `))` aligns.
+				p.nextToken()
+				value += p.curToken.Literal
+				p.skipDollarBraceBody()
+				value += p.curToken.Literal // closing }
+				// Absorb any trailing IDENT glued to the `}` (e.g.
+				// the `_SFX` in `PFX_${state}_SFX`).
+				if !p.peekToken.HasPrecedingSpace && p.peekTokenIs(token.IDENT) {
+					p.nextToken()
+					value += p.curToken.Literal
+				}
+			default:
+				goto arithIdentDone
+			}
 		}
+	arithIdentDone:
 	}
 	return &ast.Identifier{Token: tok, Value: value}
 }
@@ -251,8 +329,34 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 // for the count of positional arguments. Outside arithmetic HASH
 // opens a comment which the lexer skips before the parser sees it,
 // so this prefix only fires in arithmetic context.
+//
+// A `#` glued to an operand (`#name`, `##c`, `#$var`) is instead the
+// Zsh character-code prefix operator — the numeric code of the first
+// character of the operand. A bare `#` (space or operator follows, as
+// in `(( # > 0 ))` or `(( ! # ))`) keeps the positional-count meaning.
 func (p *Parser) parseHashSpecial() ast.Expression {
-	return &ast.Identifier{Token: p.curToken, Value: "#"}
+	hashTok := p.curToken
+	if p.inArithmetic && !p.peekToken.HasPrecedingSpace && p.hashOperandFollows() {
+		p.nextToken()
+		return &ast.PrefixExpression{
+			Token:    hashTok,
+			Operator: "#",
+			Right:    p.parseExpression(PREFIX),
+		}
+	}
+	return &ast.Identifier{Token: hashTok, Value: "#"}
+}
+
+// hashOperandFollows reports whether the token after a `#` can start an
+// arithmetic operand, marking `#` as the character-code prefix operator
+// rather than the bare positional-count parameter.
+func (p *Parser) hashOperandFollows() bool {
+	switch p.peekToken.Type {
+	case token.IDENT, token.VARIABLE, token.INT, token.HASH,
+		token.DollarLbrace, token.STRING:
+		return true
+	}
+	return false
 }
 
 // parseZshIntLiteral converts a Zsh integer literal to int64. Handles
@@ -266,7 +370,16 @@ func parseZshIntLiteral(s string) (int64, error) {
 		}
 		return strconv.ParseInt(s[hash+1:], base, 64)
 	}
-	return strconv.ParseInt(s, 0, 64)
+	n, err := strconv.ParseInt(s, 0, 64)
+	if err != nil {
+		// A leading-zero word containing an 8 or 9 (e.g. `008`) is not
+		// a valid C-style octal literal, so base-0 parsing fails. Zsh
+		// treats such a bare word as decimal by default (octal applies
+		// only under OCTAL_ZEROES), so fall back to base 10 rather than
+		// rejecting valid input.
+		return strconv.ParseInt(s, 10, 64)
+	}
+	return n, nil
 }
 
 // absorbArithmeticNumberTail walks the no-preceding-space tail after
@@ -425,12 +538,86 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	// otherwise parseStatement's outer nextToken would skip past
 	// the keyword.
 	isAssign := p.curTokenIs(token.ASSIGN) || p.curTokenIs(token.PLUSEQ)
-	if isAssign && isEmptyRhsTerminator(p.peekToken.Type) {
+	// In arithmetic an assignment always has a right-hand side, and a
+	// reserved word after `=` is a variable (`(( x = done ))`), not an
+	// empty-RHS next-statement keyword. The empty-RHS shortcut is for the
+	// command-context `X=<NL>for …` form only.
+	//
+	// A bare `X=` at end of line is a standalone empty assignment: Zsh
+	// does not continue an assignment RHS across an unescaped newline, so
+	// the next line's command (`X=<NL>print $A`) is a separate statement,
+	// not the RHS nor an env-prefix target. Without the line-boundary
+	// check the `=` infix swallowed that command (`X = print`) and
+	// orphaned its arguments, leaving them unlinted.
+	if isAssign && !p.inArithmetic &&
+		(isEmptyRhsTerminator(p.peekToken.Type) || !p.peekOnSameLogicalLine()) {
 		return expression
 	}
 	p.nextToken()
 	expression.Right = p.parseExpression(precedence)
+	// A concatenated assignment RHS word (`x=${a}/${b}`, `x=$a-$b`,
+	// `x=$PATH:/usr/bin`) glues the first expansion to following segments
+	// with no separating space. parseExpression stops at the first glued
+	// operator (`/`, `-`, `:`), leaving the tail to be mis-parsed as a
+	// separate command (`/${b}`) — which then mis-flagged the trailing
+	// expansion. Absorb the rest of the glued word so it stays part of
+	// the assignment. Command context only; arithmetic has real operators.
+	if isAssign && !p.inArithmetic {
+		p.absorbGluedRhsTail()
+	}
 	return expression
+}
+
+// absorbGluedRhsTail consumes the path-style `/segment` continuations of
+// a concatenated assignment right-hand side that parseExpression stopped
+// short of (`x=${a}/${b}`, `arr[k]=$H/$z`, `t=${DIR}/init`). It is led by
+// a glued `/` only — never a bare identifier or array index — so it does
+// not disturb how other katas read array or arithmetic segments. After
+// each slash it consumes one glued segment (an identifier, integer, or
+// expansion, whose closer parseExpression resolves).
+func (p *Parser) absorbGluedRhsTail() {
+	for !p.peekToken.HasPrecedingSpace {
+		switch {
+		case (p.peekTokenIs(token.IDENT) || p.peekTokenIs(token.VARIABLE)) &&
+			strings.HasPrefix(p.peekToken.Literal, "/"):
+			// The lexer glues a `/segment` onto a single word token
+			// (`${DIR}/init` → `${ DIR }` then IDENT `/init`). Absorb that
+			// glued path tail so it is not orphaned into a second statement.
+			p.nextToken()
+		case p.peekTokenIs(token.STRING) || p.peekTokenIs(token.IDENT):
+			// A quoted segment or bare word glued with no preceding
+			// space continues the same concatenated word in zsh
+			// (`x='b'cd` → `bcd`, `x=b'c'd` → `bcd`, `x="b"cd` → `bcd`).
+			// Absorb it so the tail is not orphaned into a spurious
+			// command — a glued `cd`/`rm`/… otherwise parsed as its own
+			// statement and mis-flagged (ZC1044 et al.). The leading
+			// `HasPrecedingSpace` guard keeps the env-prefix form
+			// (`x='b' cd`) intact: a space means `cd` is a real command.
+			p.nextToken()
+		case p.peekTokenIs(token.SLASH):
+			// A standalone `/` before an expansion (`${a}/${b}`). Consume
+			// the slash; if a glued expansion follows, consume that too.
+			p.nextToken() // onto '/'
+			if p.peekToken.HasPrecedingSpace || !p.peekStartsExpansion() {
+				return
+			}
+			p.nextToken()
+			_ = p.parseExpression(LOWEST)
+		default:
+			return
+		}
+	}
+}
+
+// peekStartsExpansion reports whether the next token opens a `$`
+// expansion (`${…}`, `$(…)`, `$name`, “ `…` “).
+func (p *Parser) peekStartsExpansion() bool {
+	switch p.peekToken.Type {
+	case token.DollarLbrace, token.VARIABLE, token.DOLLAR_LPAREN, token.BACKTICK:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Parser) parseGroupedExpression() ast.Expression {
@@ -466,8 +653,21 @@ func (p *Parser) parseGroupedExpression() ast.Expression {
 				if stmt != nil {
 					statements = append(statements, stmt)
 				}
+				// A finishCompound'd inner statement (`if … fi`, a loop,
+				// a case) already advanced curToken onto its own
+				// terminator — here the subshell's `)`. The unconditional
+				// nextToken below would then step PAST `)` and the loop
+				// would keep swallowing the enclosing block. Honor the
+				// signal: clear it and let the loop re-test for `)`.
+				if p.consumedBraceTerminator {
+					p.consumedBraceTerminator = false
+					continue
+				}
 				p.nextToken()
 			}
+			// This group owns its `)`; drop any stale terminator signal so
+			// it does not leak to the enclosing parser.
+			p.consumedBraceTerminator = false
 			return &ast.GroupedExpression{Token: tok, Expression: &ast.BlockStatement{Statements: statements}}
 		}
 	}
@@ -483,6 +683,14 @@ func (p *Parser) parseGroupedExpression() ast.Expression {
 	// swallowing the token there is safe.
 	elements := []ast.Expression{}
 	for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
+		if p.inDoubleBracket && p.curTokenIs(token.DoubleRparen) {
+			// `[[ (( 1 )) ]]` — the leading `((` was rewritten to a
+			// single `(` (see tryEarlyContextualReturn); collapse the
+			// matching `))` to a single `)` so the grouping balances.
+			p.curToken.Type = token.RPAREN
+			p.curToken.Literal = ")"
+			break
+		}
 		if p.curTokenIs(token.PIPE) {
 			p.nextToken()
 			continue
@@ -505,7 +713,7 @@ func (p *Parser) parseGroupedExpression() ast.Expression {
 
 func (p *Parser) parseArrayAccess() ast.Expression {
 	exp := &ast.ArrayAccess{Token: p.curToken}
-	p.consumeArrayAccessFlags()
+	exp.Flags = p.consumeArrayAccessFlags()
 	hasLengthOp := p.consumeLengthOp()
 	p.consumePreflags()
 
@@ -561,17 +769,20 @@ func (p *Parser) parseArrayAccess() ast.Expression {
 // consumeArrayAccessFlags drains the optional `(flags)` group between
 // `${` and the subject, used by Zsh parameter-expansion flag tuples
 // like `${(j:,:)arr}`.
-func (p *Parser) consumeArrayAccessFlags() {
+func (p *Parser) consumeArrayAccessFlags() string {
 	if !p.peekTokenIs(token.LPAREN) {
-		return
+		return ""
 	}
 	p.nextToken()
+	var sb strings.Builder
 	for !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
 		p.nextToken()
+		sb.WriteString(p.curToken.Literal)
 	}
 	if p.peekTokenIs(token.RPAREN) {
 		p.nextToken()
 	}
+	return sb.String()
 }
 
 // consumeLengthOp consumes the `#` length operator if present.
@@ -724,7 +935,7 @@ func (p *Parser) peekIsDollarSpecialOp() bool {
 	return p.peekTokenIs(token.HASH) || p.peekTokenIs(token.INT) ||
 		p.peekTokenIs(token.ASTERISK) || p.peekTokenIs(token.BANG) ||
 		p.peekTokenIs(token.MINUS) || p.peekTokenIs(token.CARET) ||
-		p.peekTokenIs(token.EQ) || p.peekTokenIs(token.TILDE)
+		p.peekTokenIs(token.ASSIGN) || p.peekTokenIs(token.TILDE)
 }
 
 func (p *Parser) parseDollarArithExpansion(dollarToken token.Token) ast.Expression {
@@ -779,9 +990,13 @@ func (p *Parser) parseDollarSpecialOp(dollarToken token.Token) ast.Expression {
 	return &ast.PrefixExpression{Token: dollarToken, Operator: "$", Right: ident}
 }
 
+// isDollarFlagOp reports whether a token following a bare `$` is one of
+// Zsh's expansion-flag operators: `$^name` (RC_EXPAND_PARAM broadcast),
+// `$=name` (forced word-split — a single `=`, token.ASSIGN), `$~name`
+// (forced glob). The split flag is one `=`, not `==`.
 func isDollarFlagOp(t token.Type) bool {
 	switch t {
-	case token.CARET, token.EQ, token.TILDE:
+	case token.CARET, token.ASSIGN, token.TILDE:
 		return true
 	}
 	return false
@@ -904,6 +1119,15 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 		p.skipDollarBraceBody()
 		lit.Name = &ast.Identifier{Token: nameTok, Value: nameTok.Literal}
 	}
+	// A function name spliced from a parameter expansion, e.g.
+	// `function $w-by-keymap { … }` in the zsh distribution. The lexer
+	// emits the leading `$w` as a VARIABLE; consume it and let
+	// consumeCompositeFunctionName glue the rest of the composite name.
+	if p.peekTokenIs(token.VARIABLE) {
+		p.nextToken()
+		lit.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		p.consumeCompositeFunctionName()
+	}
 	// Zsh allows function names that start with `-` (e.g.
 	// `function -coreutils-alias-setup { … }`). The lexer emits the
 	// leading `-` as a MINUS token followed by an IDENT (with no
@@ -931,11 +1155,23 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 	} else {
 		lit.Params = []*ast.Identifier{}
 	}
-	if !p.expectPeek(token.LBRACE) {
-		return nil
+	if p.peekTokenIs(token.LBRACE) {
+		p.nextToken() // onto `{`
+		p.nextToken() // into the body
+		lit.Body = p.parseBlockStatement(token.RBRACE)
+		return lit
 	}
-	p.nextToken()
-	lit.Body = p.parseBlockStatement(token.RBRACE)
+	// Zsh short function form (zshmisc, FUNCTIONS): the body may be a
+	// single command instead of a `{ … }` block, e.g.
+	// `function zgen() zgenom "$@"`. The keyword-less `name() cmd`
+	// path already allows this; mirror it by wrapping the single
+	// statement so FunctionLiteral.Body stays a *BlockStatement.
+	p.nextToken() // onto the body's first token
+	body := &ast.BlockStatement{Token: p.curToken}
+	if stmt := p.parseStatement(); stmt != nil {
+		body.Statements = []ast.Statement{stmt}
+	}
+	lit.Body = body
 	return lit
 }
 
@@ -967,6 +1203,14 @@ func (p *Parser) consumeCompositeFunctionName() {
 		case p.peekTokenIs(token.DollarLbrace):
 			p.nextToken()
 			p.skipDollarBraceBody()
+		case p.peekTokenIs(token.DOLLAR):
+			// Positional / special parameter glued into the name, e.g.
+			// `function _$0_fmt() { … }`. The lexer emits `$0` as DOLLAR
+			// + INT, so absorb the DOLLAR and its trailing digit operand.
+			p.nextToken()
+			if p.peekTokenIs(token.INT) && !p.peekToken.HasPrecedingSpace {
+				p.nextToken()
+			}
 		default:
 			return
 		}
@@ -1000,7 +1244,11 @@ func (p *Parser) parseCommandSubstitution() ast.Expression {
 func (p *Parser) parseDollarParenExpression() ast.Expression {
 	exp := &ast.DollarParenExpression{Token: p.curToken}
 
-	if p.peekTokenIs(token.LPAREN) {
+	// `$((…))` arithmetic: the inner `(` is glued to `$(` with no space.
+	// `$( (cmd) )` (a space before the `(`) is a command substitution
+	// whose body is a subshell, not arithmetic — fall through to the
+	// command-list path so the subshell parses.
+	if p.peekTokenIs(token.LPAREN) && !p.peekToken.HasPrecedingSpace {
 		p.nextToken()
 		p.nextToken() // consume `(`
 
@@ -1037,35 +1285,67 @@ func (p *Parser) parseDollarParenExpression() ast.Expression {
 	// closing `)` cleanly. The AST keeps the first command; katas
 	// that care about the full body can walk source.
 	exp.Command = p.parseCommandList()
-	// Drain any further statements inside the `$( … )` body.
-	// Zsh separates statements with `;` or a newline, so advance
-	// past either and re-enter parseStatement. Stops at RPAREN or
-	// EOF; callers handle unexpected EOF as a parse error.
-	for !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
-		switch {
-		case p.peekTokenIs(token.SEMICOLON):
-			p.nextToken() // onto ;
-		case p.peekToken.Line > p.curToken.Line:
-			// implicit newline separator: fall through to nextToken
-		default:
-			// Unknown continuation — bail so the RPAREN expectPeek
-			// below reports a meaningful error.
-			goto drainDone
-		}
-		p.nextToken() // onto next stmt head
-		_ = p.parseStatement()
-	}
-drainDone:
-	if !p.expectPeek(token.RPAREN) {
+	if !p.drainDollarParenBody() {
 		return nil
 	}
 	// Signal that an inner expression consumed its own closing `)`.
 	// parseBlockStatement uses the flag to skip RPAREN as its own
-	// terminator and advance past it instead, so an enclosing
-	// `( … )` subshell body doesn't end at the inner `)` of
-	// `HOST=$(cmd)`.
+	// terminator and advance past it instead, so an enclosing `( … )`
+	// subshell body doesn't end at the inner `)` of `HOST=$(cmd)`.
 	p.consumedParenTerminator = true
 	return exp
+}
+
+// drainDollarParenBody consumes the statements of a `$( … )` body after
+// the first command and stops on the closing `)`, which it leaves on
+// curToken. Returns false when the close is missing (error recorded). A
+// `case … esac` / brace-form body advances past its own terminator and
+// sets consumedBraceTerminator, landing curToken on the next token; an
+// `always` block continues a preceding brace/try block. Issue #1359.
+func (p *Parser) drainDollarParenBody() bool {
+	for {
+		if p.consumedBraceTerminator {
+			p.consumedBraceTerminator = false
+			for p.curTokenIs(token.SEMICOLON) {
+				p.nextToken()
+			}
+			if p.curTokenIs(token.RPAREN) {
+				return true
+			}
+			if p.curTokenIs(token.EOF) {
+				break
+			}
+			_ = p.parseStatement()
+			continue
+		}
+		if p.peekTokenIs(token.RPAREN) || p.peekTokenIs(token.EOF) {
+			break
+		}
+		if !p.advanceDollarParenSeparator() {
+			break
+		}
+		p.nextToken() // onto next stmt head
+		_ = p.parseStatement()
+	}
+	return p.expectPeek(token.RPAREN)
+}
+
+// advanceDollarParenSeparator steps past a `;` or newline statement
+// separator inside a `$( … )` body, or an `always` keyword that continues
+// a preceding brace/try block. Returns false for an unknown continuation
+// so the caller reports the missing `)`.
+func (p *Parser) advanceDollarParenSeparator() bool {
+	switch {
+	case p.peekTokenIs(token.SEMICOLON):
+		p.nextToken() // onto ;
+		return true
+	case p.peekToken.Line > p.curToken.Line:
+		return true // implicit newline separator
+	case p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "always":
+		p.nextToken() // onto always; caller advances onto the always-block
+		return true
+	}
+	return false
 }
 
 func (p *Parser) parseFunctionParameters() []*ast.Identifier {
@@ -1157,10 +1437,33 @@ func (p *Parser) parseRedirection(left ast.Expression) ast.Expression {
 		Left:     left,
 	}
 
+	// A redirection needs somewhere to redirect to. Zsh rejects `cmd >`
+	// outright, and accepting it silently is how a rewrite that deleted a
+	// redirect target while leaving its operator behind passed every gate:
+	// the fix-safety sweep measures corruption with this parser, so what
+	// this parser forgives, that gate cannot see.
+	if p.redirectTargetMissing() {
+		p.errors = append(p.errors, fmt.Sprintf("line %d:%d: redirection %q has no target",
+			expr.Token.Line, expr.Token.Column, expr.Operator))
+		return expr
+	}
+
 	p.nextToken()
 	expr.Right = p.parseExpression(LOWEST)
 
 	return expr
+}
+
+// redirectTargetMissing reports whether the redirection operator at
+// curToken is followed by nothing that could name a target: the end of the
+// input, a command separator, or the start of a new logical line.
+func (p *Parser) redirectTargetMissing() bool {
+	switch p.peekToken.Type {
+	case token.EOF, token.SEMICOLON, token.DSEMI, token.PIPE, token.AND, token.OR,
+		token.AMPERSAND, token.RPAREN, token.RBRACE, token.DoubleRparen, token.RDBRACKET:
+		return true
+	}
+	return !p.peekOnSameLogicalLine()
 }
 
 func (p *Parser) parseIndexExpression(left ast.Expression) ast.Expression {
@@ -1170,7 +1473,15 @@ func (p *Parser) parseIndexExpression(left ast.Expression) ast.Expression {
 		return p.parseFlaggedSubscript(exp)
 	}
 	p.parseArithmeticSubscript(exp)
-	if p.curTokenIs(token.RBRACKET) && p.peekTokenIs(token.RBRACE) {
+	// parseArithmeticSubscript already advanced onto the closing `]` when
+	// the subscript body consumed it — either a `${arr[1]}` whose `]` is
+	// followed by `}`, or a glob bracket class `a[[:alpha:]]` whose inner
+	// `[` was mis-dispatched to the command parser, which ate both `]`.
+	// In both cases curToken is on that `]`; return rather than draining
+	// forward to a `]` that does not exist (which swallowed the rest of
+	// the input). A nested subscript `arr[foo[1]]` leaves curToken on the
+	// inner `]` with the outer `]` still ahead, so guard on peek != `]`.
+	if p.curTokenIs(token.RBRACKET) && !p.peekTokenIs(token.RBRACKET) {
 		return exp
 	}
 	if !p.peekTokenIs(token.RBRACKET) {
@@ -1303,5 +1614,10 @@ func (p *Parser) parseProcessSubstitution() ast.Expression {
 		p.peekError(token.RPAREN)
 		return nil
 	}
+	// Leave curToken on the process substitution's own `)` and signal it,
+	// mirroring parseDollarParenExpression: an enclosing block such as a
+	// subshell body must not mistake this `)` for its own terminator and
+	// end early (which dropped the statements after `cmd 2> >(tee log)`).
+	p.consumedParenTerminator = true
 	return exp
 }

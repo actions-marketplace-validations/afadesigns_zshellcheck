@@ -98,6 +98,11 @@ func (rs *ReturnStatement) String() string {
 type ExpressionStatement struct {
 	Token      token.Token // the first token of the expression
 	Expression Expression  // expression node
+	// EnvPrefix marks an assignment that prefixes a command on the same
+	// line (Zsh inline env-var prefix, e.g. `DEBUG=true echo foo`). Such
+	// an assignment is scoped to the following command, not a persistent
+	// global, so scope-oriented katas (ZC1043) skip it.
+	EnvPrefix bool
 }
 
 func (es *ExpressionStatement) statementNode()                {}
@@ -453,6 +458,11 @@ type ArrayAccess struct {
 	Token token.Token // The '$' token
 	Left  Expression
 	Index Expression
+	// Flags holds the parameter-expansion flag group from
+	// `${(flags)name}` (e.g. "f", "kv", "s:,:"), empty when absent.
+	// Katas use it to tell a word-splitting expansion (`${(f)x}`) from a
+	// plain one (`${x}`), which otherwise parse to the same shape.
+	Flags string
 }
 
 func (aa *ArrayAccess) expressionNode()               {}
@@ -658,7 +668,7 @@ func Walk(node Node, f WalkFn) {
 	// value hands every kata switch arm a nil receiver, so fields
 	// like Identifier.Value or SimpleCommand.Name panic immediately.
 	// Reflect is the cheapest reliable check for this case.
-	if v := reflect.ValueOf(node); v.Kind() == reflect.Ptr && v.IsNil() {
+	if v := reflect.ValueOf(node); v.Kind() == reflect.Pointer && v.IsNil() {
 		return
 	}
 	if !f(node) {
@@ -701,6 +711,13 @@ func walkOtherChildren(node Node, f WalkFn) {
 	switch n := node.(type) {
 	case *FunctionLiteral:
 		walkFunctionLiteral(n, f)
+	case *FunctionDefinition:
+		// The `name() { … }` function form. Without this case Walk
+		// visited the FunctionDefinition node but never descended into
+		// its body, so every body-level kata (unquoted vars, `echo -e`,
+		// …) silently skipped the most common function syntax.
+		Walk(n.Name, f)
+		Walk(n.Body, f)
 	case *CallExpression:
 		Walk(n.Function, f)
 		walkSlice(n.Arguments, f)

@@ -37,22 +37,27 @@ func printUsage(out io.Writer, fset *flag.FlagSet, showBanner bool) {
 	groups := []flagGroup{
 		{
 			title: "OUTPUT",
-			names: []string{"format", "no-color", "no-banner", "verbose"},
+			names: []string{"format", "statistics", "no-color", "no-banner", "verbose"},
 			blurb: "Shape what lands on stdout / stderr.",
 		},
 		{
 			title: "FILTER",
-			names: []string{"severity"},
-			blurb: "Drop violations below a threshold.",
+			names: []string{"severity", "rule-severity", "baseline", "baseline-write"},
+			blurb: "Drop violations below a threshold, re-grade katas, or ratchet against a baseline.",
+		},
+		{
+			title: "SUPPRESSION",
+			names: []string{"add-noka", "detect-stale-noka"},
+			blurb: "Manage `# noka` directives in bulk.",
 		},
 		{
 			title: "AUTO-FIX",
-			names: []string{"fix", "diff", "dry-run"},
-			blurb: "Apply or preview deterministic rewrites.",
+			names: []string{"fix", "unsafe-fixes", "diff", "dry-run"},
+			blurb: "Apply or preview deterministic rewrites. -fix is safe-only by default.",
 		},
 		{
 			title: "DIAGNOSTICS",
-			names: []string{"cpuprofile", "version"},
+			names: []string{"list-rules", "explain", "cpuprofile", "version"},
 			blurb: "Profile, inspect, or print metadata.",
 		},
 	}
@@ -75,10 +80,16 @@ func printUsage(out io.Writer, fset *flag.FlagSet, showBanner bool) {
 		comment, command string
 	}{
 		{"Lint a single script", "zshellcheck path/to/script.zsh"},
+		{"List every kata, or explain one", "zshellcheck -list-rules; zshellcheck -explain ZC1001"},
 		{"Lint a tree, suppress style-level findings", "zshellcheck -severity warning ./scripts"},
+		{"Triage by frequency: per-kata counts", "zshellcheck -statistics ./scripts"},
+		{"Snapshot findings, then fail only on new ones", "zshellcheck -baseline-write .zshellcheck-baseline ./scripts"},
+		{"Re-grade a kata's severity", "zshellcheck -rule-severity ZC1037:error ./scripts"},
+		{"Silence every current finding inline", "zshellcheck -add-noka ./scripts"},
 		{"Emit SARIF for GitHub Code Scanning", "zshellcheck -format sarif ./scripts > zshellcheck.sarif"},
 		{"Preview every available auto-fix as a diff", "zshellcheck -diff path/to/script.zsh"},
-		{"Apply auto-fixes in place", "zshellcheck -fix path/to/script.zsh"},
+		{"Apply auto-fixes in place (safe only)", "zshellcheck -fix path/to/script.zsh"},
+		{"Also apply behavior-changing fixes", "zshellcheck -fix -unsafe-fixes path/to/script.zsh"},
 		{"CI-friendly run (no banner, errors only)", "zshellcheck -no-banner -severity error ./scripts"},
 	}
 	for _, ex := range examples {

@@ -2,7 +2,11 @@
 // Copyright the ZShellCheck contributors.
 package katas
 
-import "github.com/afadesigns/zshellcheck/pkg/ast"
+import (
+	"strings"
+
+	"github.com/afadesigns/zshellcheck/pkg/ast"
+)
 
 // LineColToByteOffset converts a 1-based (line, column) coordinate
 // pair into a 0-based byte offset within source. It returns -1 when
@@ -115,4 +119,51 @@ func CommandIdentifier(cmd *ast.SimpleCommand) string {
 		return ""
 	}
 	return ident.Value
+}
+
+// LongFlagName splits a long option into its name and reports whether the
+// argument carried an inline value. `--depth=1` yields `--depth`, true;
+// `--depth` yields `--depth`, false. A word that is not a long option comes
+// back unchanged. Most GNU-style tools accept both spellings for a
+// value-taking option, so a kata that compares an argument against a bare
+// `--flag` sees only half of real usage.
+func LongFlagName(word string) (string, bool) {
+	if !strings.HasPrefix(word, "--") {
+		return word, false
+	}
+	if name, _, found := strings.Cut(word, "="); found {
+		return name, true
+	}
+	return word, false
+}
+
+// FlagValueAt returns the value carried by the option at args[i] when that
+// option is one of names, together with the number of arguments it spans.
+// `--directory=/` spans one argument, `--directory /` spans two. A word that
+// names no listed option, or an option whose value never arrives, yields
+// ("", 0).
+func FlagValueAt(args []ast.Expression, i int, names ...string) (string, int) {
+	if i < 0 || i >= len(args) {
+		return "", 0
+	}
+	word := args[i].String()
+	name, inline := LongFlagName(word)
+	matched := false
+	for _, want := range names {
+		if name == want {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return "", 0
+	}
+	if inline {
+		_, value, _ := strings.Cut(word, "=")
+		return value, 1
+	}
+	if i+1 >= len(args) {
+		return "", 0
+	}
+	return args[i+1].String(), 2
 }

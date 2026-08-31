@@ -25,12 +25,23 @@ const (
 )
 
 var precedences = map[token.Type]int{
-	token.AND:           LOGICAL,
-	token.OR:            LOGICAL,
-	token.EQ:            EQUALS,
-	token.NotEq:         EQUALS,
-	token.LT:            LESSGREATER,
-	token.GT:            LESSGREATER,
+	token.AND:   LOGICAL,
+	token.OR:    LOGICAL,
+	token.EQ:    EQUALS,
+	token.NotEq: EQUALS,
+	token.LT:    LESSGREATER,
+	token.GT:    LESSGREATER,
+	// The compound redirections share GT/LT's parseRedirection infix
+	// handler but were missing a precedence entry, so a trailing
+	// redirect reached through the expression path (`cmd >> out`,
+	// `cmd >& out`, `cmd <& 3`) was left unconsumed and its target
+	// orphaned into a bogus second statement. LTLT (`<<`) is excluded:
+	// it opens a heredoc whose body the lexer handles separately, and
+	// giving it infix precedence routes it through parseRedirection,
+	// which mis-reads the delimiter word as a redirect target.
+	token.GTGT:          LESSGREATER,
+	token.GTAMP:         LESSGREATER,
+	token.LTAMP:         LESSGREATER,
 	token.PLUS:          SUM,
 	token.MINUS:         SUM,
 	token.SLASH:         PRODUCT,
@@ -88,6 +99,11 @@ type Parser struct {
 
 	inBackticks  int
 	inArithmetic bool
+	// foreachDepth is positive while parsing the body of a `foreach …
+	// end` loop. It lets parseBlockStatement recognise the literal `end`
+	// as a body terminator without making `end` a global keyword, so
+	// `end` stays usable as a command or function name elsewhere.
+	foreachDepth int
 	// inDoubleBracket is set while parsing the body of a `[[ … ]]`
 	// conditional. Inside that context `(pat|pat)` is a glob
 	// alternation, not a call expression, and adjacent groups like
@@ -174,7 +190,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(token.PLUS, p.parsePrefixExpression)
 	p.registerPrefix(token.CARET, p.parsePrefixExpression)
 	p.registerPrefix(token.ASTERISK, p.parsePrefixExpression)
-	p.registerPrefix(token.QUESTION, p.parsePrefixExpression)
+	p.registerPrefix(token.QUESTION, p.parseQuestionPrefix)
 	p.registerPrefix(token.TILDE, p.parsePrefixExpression)
 	// `++x` / `--x` are pre-increment / pre-decrement in Zsh
 	// arithmetic (`(( ++x ))`, `(( --x ))`). Register both as
@@ -271,6 +287,16 @@ func (p *Parser) ParseProgram() *ast.Program {
 			p.nextToken()
 			continue
 		}
+		// An orphan compound closer (`fi`, `done`, `esac`) at the top
+		// level of the program is unmatched — Zsh rejects it. This is the
+		// only place the check runs: a closer nested inside a body can be
+		// a parse-desync artefact, so flagging it there would risk a
+		// false positive (issue #1362).
+		if p.curTokenIs(token.Fi) || p.curTokenIs(token.DONE) || p.curTokenIs(token.ESAC) {
+			p.parseStrayCloser()
+			p.nextToken()
+			continue
+		}
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Statements = append(program.Statements, stmt)
@@ -300,9 +326,7 @@ var commandDelimiterTokens = map[token.Type]struct{}{
 	token.EOF: {}, token.SEMICOLON: {}, token.PIPE: {},
 	token.AND: {}, token.OR: {},
 	token.RPAREN: {}, token.RBRACE: {}, token.HASH: {},
-	token.THEN: {}, token.ELSE: {}, token.ELIF: {}, token.Fi: {},
-	token.DO: {}, token.DONE: {},
-	token.ESAC: {}, token.DSEMI: {},
+	token.DSEMI: {},
 }
 
 func (p *Parser) isCommandDelimiter(t token.Token) bool {
@@ -339,6 +363,20 @@ func (p *Parser) peekError(t token.Type) {
 func (p *Parser) noPrefixParseFnError(t token.Type) {
 	msg := fmt.Sprintf("line %d:%d: no prefix parse function for %s found",
 		p.curToken.Line, p.curToken.Column, t)
+	p.errors = append(p.errors, msg)
+}
+
+// parseStrayCloser records an unmatched compound-closer keyword (`fi`,
+// `done`, `esac`) that reached the top level of the program with no open
+// compound — Zsh itself rejects this ("parse error near `<kw>'"). The
+// caller (ParseProgram) invokes it only at program top level: a closer
+// nested inside a body can be the artefact of an upstream parse desync,
+// so flagging it there would risk a false positive (issue #1362).
+// curToken is left on the closer; the caller advances past it so
+// recovery continues.
+func (p *Parser) parseStrayCloser() {
+	msg := fmt.Sprintf("line %d:%d: unexpected `%s` without a matching compound command",
+		p.curToken.Line, p.curToken.Column, p.curToken.Literal)
 	p.errors = append(p.errors, msg)
 }
 

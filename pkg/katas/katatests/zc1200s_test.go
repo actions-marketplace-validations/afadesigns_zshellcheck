@@ -1098,6 +1098,52 @@ func TestZC1231(t *testing.T) {
 			expected: []katas.Violation{},
 		},
 		{
+			// Git accepts an inline value for every option that
+			// truncates history, and that spelling is the common one.
+			name:     "valid git clone --depth=1",
+			input:    `git clone --depth=1 https://github.com/user/repo`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "valid git clone --depth=50",
+			input:    `git clone --depth=50 https://github.com/user/repo`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "valid git clone --depth quoted value",
+			input:    `git clone --depth="1" https://github.com/user/repo`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "valid git clone --shallow-since inline",
+			input:    `git clone --shallow-since=2024-01-01 https://github.com/user/repo`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "valid git clone --shallow-since spaced",
+			input:    `git clone --shallow-since 2024-01-01 https://github.com/user/repo`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "valid git clone --shallow-exclude",
+			input:    `git clone --shallow-exclude=refs/tags/v1 https://github.com/user/repo`,
+			expected: []katas.Violation{},
+		},
+		{
+			// `--single-branch` narrows the clone to one branch but still
+			// downloads that branch's whole history.
+			name:  "invalid git clone --single-branch",
+			input: `git clone --single-branch https://github.com/user/repo`,
+			expected: []katas.Violation{
+				{
+					KataID:  "ZC1231",
+					Message: "Consider `git clone --depth 1` in scripts. Full clones download entire history which is unnecessary for builds and CI.",
+					Line:    1,
+					Column:  1,
+				},
+			},
+		},
+		{
 			name:  "invalid git clone full",
 			input: `git clone https://github.com/user/repo`,
 			expected: []katas.Violation{
@@ -2644,16 +2690,69 @@ func TestZC1273(t *testing.T) {
 			expected: []katas.Violation{},
 		},
 		{
-			name:  "invalid grep redirected to /dev/null",
-			input: `grep pattern file.txt /dev/null`,
+			name:  "stdout redirected to /dev/null",
+			input: `grep pattern file.txt > /dev/null`,
 			expected: []katas.Violation{
 				{
 					KataID:  "ZC1273",
-					Message: "Use `grep -q` instead of redirecting to `/dev/null`. It is faster and more idiomatic.",
+					Message: "Use `grep -q` instead of redirecting to `/dev/null`. It exits on the first match instead of reading the whole input.",
 					Line:    1,
 					Column:  1,
 				},
 			},
+		},
+		{
+			name:  "stdout redirect written without a space",
+			input: `grep pattern file.txt >/dev/null`,
+			expected: []katas.Violation{
+				{
+					KataID:  "ZC1273",
+					Message: "Use `grep -q` instead of redirecting to `/dev/null`. It exits on the first match instead of reading the whole input.",
+					Line:    1,
+					Column:  1,
+				},
+			},
+		},
+		{
+			name:  "explicit stdout file descriptor",
+			input: `grep pattern file.txt 1>/dev/null`,
+			expected: []katas.Violation{
+				{
+					KataID:  "ZC1273",
+					Message: "Use `grep -q` instead of redirecting to `/dev/null`. It exits on the first match instead of reading the whole input.",
+					Line:    1,
+					Column:  1,
+				},
+			},
+		},
+		{
+			// `/dev/null` with no operator before it is a second search
+			// file, the idiom that forces grep to print file-name prefixes.
+			name:     "second search file is not a redirect",
+			input:    `grep pattern file.txt /dev/null`,
+			expected: []katas.Violation{},
+		},
+		{
+			// `grep -q` keeps printing to stderr, so it cannot replace a
+			// redirect that also discards stderr.
+			name:     "both streams discarded",
+			input:    `grep pattern file.txt &> /dev/null`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "stderr duplicated onto stdout",
+			input:    `grep pattern file.txt > /dev/null 2>&1`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "stderr only",
+			input:    `grep pattern file.txt 2> /dev/null`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "appended rather than truncated",
+			input:    `grep pattern file.txt >> /dev/null`,
+			expected: []katas.Violation{},
 		},
 	}
 
@@ -3092,16 +3191,17 @@ func TestZC1285(t *testing.T) {
 			expected: []katas.Violation{},
 		},
 		{
-			name:  "sort with single file argument",
-			input: `sort data.txt`,
-			expected: []katas.Violation{
-				{
-					KataID:  "ZC1285",
-					Message: "Use Zsh `${(o)array}` for sorting instead of piping to `sort`. The `(o)` flag sorts in-shell.",
-					Line:    1,
-					Column:  1,
-				},
-			},
+			// `sort <file>` sorts a file's lines; `${(o)array}` sorts an
+			// in-shell array, not a file, so it cannot replace this.
+			// Flagging the file form gave wrong advice — not flagged.
+			name:     "sort with single file argument is not flagged",
+			input:    `sort data.txt`,
+			expected: []katas.Violation{},
+		},
+		{
+			name:     "sort of a quoted file path is not flagged",
+			input:    `sort "$logfile"`,
+			expected: []katas.Violation{},
 		},
 	}
 
